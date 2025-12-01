@@ -1,0 +1,22 @@
+# Ignore data directories
+data_testbeam/
+*.root
+
+# Ignore temporary files
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# Ignore Python cache and temp
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore editor/OS junk
+*.swp
+*.swo
+.DS_Store
+
