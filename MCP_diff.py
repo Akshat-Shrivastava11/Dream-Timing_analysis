@@ -173,13 +173,13 @@ with uproot.open(FILE) as f:
             plt.savefig(os.path.join(outdir, f"event_{idx}.png"))
             plt.close()
 
-        # print(f"Board {board}: Plotting zero-peak examples...")
-        # for idx in zero_indices:
-        #     plot_waveform_pair(idx, zero_dir, "Zero peak (T50 = 0)")
+        print(f"Board {board}: Plotting zero-peak examples...")
+        for idx in zero_indices:
+            plot_waveform_pair(idx, zero_dir, "Zero peak (T50 = 0)")
 
-        # print(f"Board {board}: Plotting nonzero-peak examples...")
-        # for idx in nonzero_indices:
-        #     plot_waveform_pair(idx, nonzero_dir, "Good peak (Δt50 ≠ 0)")
+        print(f"Board {board}: Plotting nonzero-peak examples...")
+        for idx in nonzero_indices:
+            plot_waveform_pair(idx, nonzero_dir, "Good peak (Δt50 ≠ 0)")
 
        
 
