@@ -2,168 +2,229 @@
 import uproot
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import medfilt, find_peaks
+from scipy.signal import medfilt
 from scipy.stats import norm
 import os
+from multiprocessing import Pool, cpu_count
 
 # ============================
 # Configuration
 # ============================
 FILE = "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1468_250927145556_TimingDAQ.root"
-OUTPUT_DIR = "./MCP/Delta_t50_Results"
+OUTPUT_DIR = "./MCP/Delta_t50_Results2"
 SAMPLE_TIME_NS = 0.2
-MAX_EVENTS = 200
+MAX_EVENTS = 200000
 THRESHOLD_LEVEL = 12
-MIN_PEAK_WIDTH = 3  # minimum samples in a peak
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-for board in range(4):
-    os.makedirs(os.path.join(OUTPUT_DIR, f"Board{board}"), exist_ok=True)
 
-# ============================
-# T50 extraction using find_peaks
-# ============================
-def t50_firstpeak_threshold(wf, threshold_level=15):
-    wf = np.asarray(wf, dtype=float)
-    wf = -wf  # Invert waveform
-    baseline_samples = 200
-    baseline = np.median(wf[:baseline_samples])
-    wf_bs = wf - baseline
 
-    # Smooth waveform first
-    wf_smooth = medfilt(wf_bs, kernel_size=5)
+# =====================================================
+# FAST T50 extraction
+# =====================================================
+def t50_firstpeak_threshold_fast(wf, threshold=15):
+    wf = -wf.astype(np.float32)
 
-    # Find all points above threshold
-    above = np.where(wf_smooth > threshold_level)[0]
-    if len(above) == 0:
-        return None, wf_bs, None  # No peaks above threshold
+    baseline = np.median(wf[:200])
+    wf -= baseline
 
-    # Split into continuous groups (candidate peaks)
-    groups = np.split(above, np.where(np.diff(above) > 3)[0] + 1)
+    wf_smooth = medfilt(wf, kernel_size=5)
 
-    # Pick first group that has a peak above threshold
-    first_peak_group = None
+    above = np.flatnonzero(wf_smooth > threshold)
+    if above.size == 0:
+        return np.nan
+
+    diffs = np.diff(above)
+    breaks = np.where(diffs > 3)[0] + 1
+    groups = np.split(above, breaks)
+
     for g in groups:
-        if np.max(wf_smooth[g]) >= threshold_level:
-            first_peak_group = g
+        if wf_smooth[g].max() >= threshold:
+            first = g
             break
 
-    if first_peak_group is None:
-        return None, wf_bs, None
+    peak_val = wf_smooth[first].max()
+    rel_vals = wf_smooth[first]
 
-    rising_region = first_peak_group
-    peak_value = np.max(wf_smooth[rising_region])
+    # --- safe t10 ---
+    idx10 = np.searchsorted(rel_vals, 0.1 * peak_val)
+    idx10 = min(idx10, len(first) - 1)
+    t10 = first[idx10]
 
-    ten_candidates = np.where(wf_smooth[rising_region] >= 0.10 * peak_value)[0]
-    ninety_candidates = np.where(wf_smooth[rising_region] >= 0.90 * peak_value)[0]
+    # --- safe t90 ---
+    idx90 = np.searchsorted(rel_vals, 0.9 * peak_val)
+    idx90 = min(idx90, len(first) - 1)
+    t90 = first[idx90]
 
-    ten_idx = rising_region[ten_candidates[0]] if len(ten_candidates) else rising_region[0]
-    ninety_idx = rising_region[ninety_candidates[0]] if len(ninety_candidates) else rising_region[-1]
+    if t90 <= t10:
+        t90 = min(t10 + 1, len(wf) - 1)
 
-    if ten_idx >= ninety_idx:
-        ninety_idx = min(ten_idx + 1, len(wf_bs) - 1)
-
-    t_poly = np.arange(ten_idx, ninety_idx + 1)
-    y_poly = wf_bs[ten_idx:ninety_idx + 1]
-
-    if len(t_poly) < 4:
-        t50_idx = ten_idx + (ninety_idx - ten_idx) / 2
+    # Polynomial fit
+    if t90 - t10 >= 4:
+        x = np.arange(t10, t90 + 1)
+        y = wf[t10:t90 + 1]
+        a, b, c, d = np.polyfit(x, y, 3)
+        roots = np.roots([a, b, c, d - 0.5 * peak_val])
+        real = roots[np.isreal(roots)].real
+        real = real[(real >= t10) & (real <= t90)]
+        if real.size > 0:
+            t50 = real[0]
+        else:
+            t50 = t10 + 0.5 * (t90 - t10)
     else:
-        coeffs = np.polyfit(t_poly, y_poly, 3)
-        a, b, c, d = coeffs
-        half_height = 0.5 * peak_value
-        roots = np.roots([a, b, c, d - half_height])
-        real_roots = [r.real for r in roots if np.isreal(r) and ten_idx <= r.real <= ninety_idx]
-        t50_idx = real_roots[0] if real_roots else ten_idx + (ninety_idx - ten_idx) / 2
-    
+        t50 = t10 + 0.5 * (t90 - t10)
 
-    return t50_idx * SAMPLE_TIME_NS, wf_bs, (ten_idx, ninety_idx, peak_value)
+    return t50 * SAMPLE_TIME_NS
 
 
-# ============================
-# Process per board
-# ============================
+# =====================================================
+# Multiprocessing wrapper
+# =====================================================
+def _t50_worker(args):
+    wf, thr = args
+    return t50_firstpeak_threshold_fast(wf, threshold=thr)
+
+
+# =====================================================
+# Main processing per board
+# =====================================================
 with uproot.open(FILE) as f:
     tree = f["EventTree"]
 
     for board in range(4):
-        print(f"\nProcessing Board {board} ...")
-        channels = [f"DRS_Board{board}_Group3_Channel6",
-                    f"DRS_Board{board}_Group3_Channel7"]
+        print(f"\n==============================")
+        print(f"Processing Board {board} with multiprocessing...")
+        print(f"==============================")
 
-        t50_map = {ch: [] for ch in channels}
-        waveform_map = {ch: [] for ch in channels}
-        fit_regions = {ch: [] for ch in channels}
+        ch6 = f"DRS_Board{board}_Group3_Channel6"
+        ch7 = f"DRS_Board{board}_Group3_Channel7"
+        channels = [ch6, ch7]
 
-        # Loop over events
-        for iev, arrays in enumerate(tree.iterate(channels, step_size=1)):
-            if iev >= MAX_EVENTS:
-                break
-            event = {ch: arrays[ch][0] for ch in channels}
-        
-            for ch in channels:
-                t50, wf_bs, fit_info = t50_firstpeak_threshold(event[ch])
-                t50_map[ch].append(t50)
-                waveform_map[ch].append(wf_bs)
-                fit_regions[ch].append(fit_info)
-                print(  f"Board {board} Event {iev} Channel {ch}: T50 = {t50} ns")
+        arrays = tree.arrays(channels, library="np", entry_stop=MAX_EVENTS)
+
+        wf6_all = arrays[ch6]
+        wf7_all = arrays[ch7]
+        n_ev = wf6_all.shape[0]
+
+        print(f"Loaded {n_ev} waveforms for board {board}")
+
+        # Prepare multiprocessing inputs
+        args6 = [(wf6_all[i], THRESHOLD_LEVEL) for i in range(n_ev)]
+        args7 = [(wf7_all[i], THRESHOLD_LEVEL) for i in range(n_ev)]
+
+        ncpu = cpu_count()
+        print(f"Using {ncpu} CPU cores...")
+
+        # Run multiprocessing
+        with Pool(processes=ncpu) as pool:
+            t6 = np.array(pool.map(_t50_worker, args6), dtype=np.float32)
+            t7 = np.array(pool.map(_t50_worker, args7), dtype=np.float32)
 
         # Compute Δt50
-        t6 = np.array([v if v is not None else np.nan for v in t50_map[channels[0]]], dtype=float)
-        t7 = np.array([v if v is not None else np.nan for v in t50_map[channels[1]]], dtype=float)
         mask = ~np.isnan(t6) & ~np.isnan(t7)
-        delta_t = (t6 - t7)[mask]
-        print(f"Board {board}: Found {len(delta_t)} valid Δt50 out of {MAX_EVENTS} events.")
+        delta_t = t6[mask] - t7[mask]
 
-        if len(delta_t) == 0:
-            print("No valid Δt50 found for this board.")
+
+        # ---------------------------------------------------------
+        # Select 10 zero-peak events and 10 valid Δt50 events
+        # ---------------------------------------------------------
+
+        zero_mask = ((np.isnan(t6) | (t6 == 0)) | (np.isnan(t7) | (t7 == 0)))
+        zero_indices = np.where(zero_mask)[0][:10]
+
+        nonzero_indices = np.where(valid)[0][:10]
+
+        # Prepare subdirectories
+        zero_dir = os.path.join(OUTPUT_DIR, f"Board{board}", "zero_peaks")
+        nonzero_dir = os.path.join(OUTPUT_DIR, f"Board{board}", "nonzero_peaks")
+        os.makedirs(zero_dir, exist_ok=True)
+        os.makedirs(nonzero_dir, exist_ok=True)
+
+        def plot_waveform_pair(idx, outdir, label):
+            """Plots both waveforms for an event, highlighting fit region if available."""
+            wf6 = wf6_all[idx]
+            wf7 = wf7_all[idx]
+
+            # baseline subtract like inside T50 function
+            wf6_bs = -(wf6 - np.median(wf6[:200]))
+            wf7_bs = -(wf7 - np.median(wf7[:200]))
+
+            t_axis = np.arange(len(wf6)) * SAMPLE_TIME_NS
+
+            fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+
+            ax.plot(t_axis, wf6_bs, label="Ch6", alpha=0.8)
+            ax.plot(t_axis, wf7_bs, label="Ch7", alpha=0.8)
+
+            # Add T50 markers if nonzero
+            if not (np.isnan(t6[idx]) or t6[idx] == 0):
+                ax.axvline(t6[idx], color='b', linestyle='--', alpha=0.8, label="T50 Ch6")
+
+            if not (np.isnan(t7[idx]) or t7[idx] == 0):
+                ax.axvline(t7[idx], color='r', linestyle='--', alpha=0.8, label="T50 Ch7")
+
+            ax.set_title(f"{label} — Event {idx}")
+            ax.set_xlabel("Time [ns]")
+            ax.set_ylabel("Amplitude [a.u.]")
+            ax.grid(True)
+            ax.legend()
+            plt.tight_layout()
+
+            plt.savefig(os.path.join(outdir, f"event_{idx}.png"))
+            plt.close()
+
+
+        # ---------------------------------------------------------
+        # Generate the 10 + 10 plots
+        # ---------------------------------------------------------
+        print(f"Board {board}: Plotting {len(zero_indices)} zero-peak events...")
+        for idx in zero_indices:
+            plot_waveform_pair(idx, zero_dir, "Zero peak (T50 = 0)")
+
+        print(f"Board {board}: Plotting {len(nonzero_indices)} nonzero-peak events...")
+        for idx in nonzero_indices:
+            plot_waveform_pair(idx, nonzero_dir, "Good peak (Δt50 ≠ 0)")
+
+
+        print(f"Board {board}: {mask.sum()} valid Δt50 events")
+
+        if mask.sum() == 0:
+            print("No valid events. Skipping.")
             continue
-        # Optional: save per-event waveform plots only if T50 was found
-        # for iev in range(MAX_EVENTS):
-        #     # Only plot if both channels have a valid T50
-        #     if t50_map[channels[0]][iev] is None or t50_map[channels[1]][iev] is None:
-        #         continue  # skip this event
 
-        #     fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
-        #     for i, ch in enumerate(channels):
-        #         wf = waveform_map[ch][iev]
-        #         fit = fit_regions[ch][iev]
-        #         x = np.arange(len(wf)) * SAMPLE_TIME_NS
-        #         axes[i].plot(x, wf, color='b' if i == 0 else 'r', alpha=0.7)
-        #         axes[i].set_title(f"{ch} Event {iev}")
-        #         axes[i].set_xlabel("Time [ns]")
-        #         axes[i].set_ylabel("Amplitude [a.u.]")
+        # --------------------------------------------------------
+        # Histogram & Gaussian Fit (only non-zero Δt50 values)
+        # --------------------------------------------------------
 
-        #         if fit is not None:
-        #             ten, ninety, peak = fit
-        #             axes[i].axvspan(ten * SAMPLE_TIME_NS, ninety * SAMPLE_TIME_NS, color='g', alpha=0.3)
-        #             t50_val = t50_map[ch][iev]
-        #             axes[i].axvline(t50_val, color='k', linestyle='--', label='T50')
+        # extract only valid Δt values (non-zero peaks)
+        delta_valid = delta_t[valid]
 
-        #     plt.tight_layout()
-        #     plt.savefig(os.path.join(OUTPUT_DIR, f"Board{board}", f"Event{iev}.png"))
-        #     plt.close()
+        # Fit a gaussian ONLY to good events
+        mu, sigma = norm.fit(delta_valid)
 
-        # Gaussian fit
-        mu, sigma = norm.fit(delta_t)
+        plt.figure(figsize=(8, 6))
 
-        # Plot histogram
-        plt.figure(figsize=(8,6))
-        n, bins, _ = plt.hist(delta_t, bins=50,histtype="step", alpha=0.7,  label="Δt50 data")
-        x = np.linspace(min(delta_t), max(delta_t), 400)
-        y = norm.pdf(x, mu, sigma)
-        plt.plot(x, y, 'k--', linewidth=2, label=f"Mean={mu:.2f} ns, σ={sigma:.2f} ns, Width={np.ptp(delta_t):.2f} ns")
+        # Histogram normalized to probability density
+        plt.hist(delta_valid, bins=2000, density=True,
+                histtype="step", linewidth=1.4, alpha=0.8, label="Δt50 (valid)")
+
+        # Generate Gaussian curve
+        x = np.linspace(delta_valid.min(), delta_valid.max(), 400)
+        plt.plot(x, norm.pdf(x, mu, sigma),
+                "k--", linewidth=1.5,
+                label=f"Gaussian Fit\nμ = {mu:.3f} ns\nσ = {sigma:.3f} ns")
+
         plt.xlabel("Δt50 = t50(Ch6) - t50(Ch7) [ns]")
-        plt.ylabel("Probability density")
-        plt.title(f"Board {board} Δt50 histogram (first {MAX_EVENTS} events)")
-        plt.grid(True)
+        plt.ylabel("Probability Density")
+        plt.title(f"Board {board} — Δt50 Distribution (Valid Only)\nN = {len(delta_valid)}")
         plt.legend()
+
+        plt.xlim(-1, 1)
         plt.tight_layout()
-        plt.savefig(os.path.join(OUTPUT_DIR, f"Board{board}_Delta_t50_hist.png"))
+
+        outfile = os.path.join(OUTPUT_DIR, f"Board{board}_Delta_t50_MP.png")
+        plt.savefig(outfile)
         plt.close()
 
-        # Optional: save per-event waveform plots
-        
-
-
-        print(f"Board {board}: Δt50 histogram saved, mean={mu:.3f} ns, std={sigma:.3f} ns, width={np.ptp(delta_t):.3f} ns")
+        print(f"Board {board}: DONE — saved Δt50 histogram.")
+        print(f"Mean = {mu:.3f} ns   |   Sigma = {sigma:.3f} ns   |   N = {len(delta_valid)}")
