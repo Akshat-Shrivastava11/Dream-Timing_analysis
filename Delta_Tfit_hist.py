@@ -1,212 +1,471 @@
-#!/usr/bin/env python3
-import uproot
+import sys
+import re
 import numpy as np
+import awkward as ak
+import uproot
 import matplotlib.pyplot as plt
+import gc
 import os
+from scipy.stats import norm
+from scipy.optimize import curve_fit
 
-# ============================
-# Configuration
-# ============================
-FILE = "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1468_250927145556_TimingDAQ.root"
-OUTPUT_DIR = "./MCP/Hist_delta_T"
-SAMPLE_TIME_ps = 0.2
-THRESHOLD_LEVEL = 12
+# === Parse input ===
+#filename = sys.argv[1]
+#match = re.search(r"run(\d+)", filename)
+#run_number = match.group(1) if match else "unknown"
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-for board in range(4):
-    os.makedirs(os.path.join(OUTPUT_DIR, f"Board{board}"), exist_ok=True)
+# === Load ROOT file using uproot ===
+run_number = "1468"
+filename =  "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1468_250927145556_TimingDAQ.root"
+file = uproot.open(filename)
+tree = file["EventTree"]
 
-# ============================
-# T50 extraction (NO smoothing)
-# ============================
-def t50_firstpeak_threshold(wf, threshold_level=15):
-    wf = np.asarray(wf, dtype=float)
+print(f"Loaded file: {filename} with {tree.num_entries} events")
 
-    # Invert waveform
-    wf = -wf
+# === Define channel map ===
+channel_map = {
+    "DRS_Board0_Group3_Channel0": "ch0",
+    "DRS_Board0_Group3_Channel1": "ch1",
+    "DRS_Board0_Group3_Channel2": "ch2",
+    "DRS_Board0_Group3_Channel3": "ch3",
+    "DRS_Board0_Group3_Channel4": "ch4",
+    "DRS_Board0_Group3_Channel5": "ch5",
+    "DRS_Board0_Group3_Channel6": "ch6",
+    "DRS_Board0_Group3_Channel7": "ch7",
+    "DRS_Board0_Group3_Channel8": "ch8",
+    "DRS_Board7_Group0_Channel0": "br1",
+    "DRS_Board7_Group0_Channel1": "br2",
+    "DRS_Board7_Group0_Channel2": "br3",
+    "DRS_Board7_Group0_Channel3": "br4",
+}
 
-    # Baseline subtract
-    baseline = np.median(wf[:200])
-    wf_bs = wf - baseline
+# === Load branches ===
+branches_to_load = list(channel_map.keys())
+data = tree.arrays(branches_to_load, library="ak")
 
-    # Threshold crossing
-    above = np.where(wf_bs > threshold_level)[0]
-    if len(above) == 0:
-        return None, wf_bs, None
+# Rename for convenience
+channels = {alias: data[root_name] for root_name, alias in channel_map.items()}
 
-    # Split into contiguous groups
-    splits = np.where(np.diff(above) > 3)[0] + 1
-    groups = np.split(above, splits)
+# === Output container ===
+delta_mcp_rising, mcp1_time, mcp2_time = [], [], []
+ch0_time, ch1_time, ch2_time, ch3_time, ch4_time, ch5_time = [], [], [], [], [], []
+# === Helper functions (same as original) ===
 
-    # Pick first real peak
-    first_peak_group = None
-    for g in groups:
-        if np.max(wf_bs[g]) >= threshold_level:
-            first_peak_group = g
-            break
-    if first_peak_group is None:
-        return None, wf_bs, None
+def get_min(vec):
+    try:
+        arr = np.asarray(vec, dtype=np.float32)
+        if arr.size == 0:
+            return None, None
+        min_idx = np.argmin(arr)
+        return min_idx, arr[min_idx]
+    except Exception as e:
+        print("get_min() failed:", e)
+        return None, None
 
-    rising = first_peak_group
-    peak = np.max(wf_bs[rising])
+def find_baseline(event_info):
+    try:
+        baseline = np.asarray(event_info[:int(0.1 * len(event_info))])
+        avg = np.mean(baseline)
+        rms = np.std(baseline)
+    except:
+        avg = 0
+        rms = 99999
+    return avg, rms
 
-    # 10% and 90%
-    ten_idx = rising[np.where(wf_bs[rising] >= 0.10 * peak)[0][0]]
-    ninety_idx = rising[np.where(wf_bs[rising] >= 0.90 * peak)[0][0]]
+def fit_region(event_info, baseline):
+    try:
+        event_info = np.asarray(event_info)
+        if event_info.size == 0:
+            raise ValueError("empty waveform")
+        min_idx = np.argmin(event_info)
+        min_val = event_info[min_idx]
+        amplitude = baseline - min_val
+        th_low = baseline - 0.1 * amplitude
+        th_high = baseline - 0.9 * amplitude
+        idxs = np.arange(len(event_info))
+        mask = (event_info >= th_high) & (event_info <= th_low) & (idxs < min_idx) & (np.abs(idxs - min_idx) < 10)
+        return event_info[mask], idxs[mask], amplitude
+    except Exception as e:
+        print("fit_region() failed:", e)
+        return np.array([]), np.array([]), 0
 
-    if ten_idx >= ninety_idx:
-        ninety_idx = min(ten_idx + 1, len(wf_bs)-1)
+def fit_rising_edge(region, indices):
+    if len(region) < 2:
+        return None, None
+    return np.polyfit(indices, region, 1)
 
-    # 50% crossing
-    t50_level = 0.5 * peak
-    region = np.arange(ten_idx, ninety_idx + 1)
-    y = wf_bs[region]
+def extract_true_time(slope, intercept, baseline, amplitude):
+    try:
+        target = baseline - 0.5 * amplitude
+        ts = (target - intercept) / slope
+        return ts, 200 * ts  # 200 ps per sample?
+    except Exception:
+        return None, None
 
-    idx = np.argmin(np.abs(y - t50_level))
-    t50_idx = region[idx]
+def plot_waveform(event_idx, signal, slope, intercept, time):
+    idxs = np.arange(len(signal))
+    plt.plot(idxs, signal, label="Signal")
+    if slope is not None and intercept is not None:
+        plt.plot(idxs, slope * idxs + intercept, '--', label="Fit")
+        plt.title(f"Event {event_idx}, Time: {time:.2f} ps")
+    #ymin = min(np.min(signal)-50)
+    #ymax = max(np.max(signal)+50)
+    plt.ylim(2000, 3000)
+    plt.legend()
+    plt.tight_layout()
+    os.makedirs("plots", exist_ok=True)
+    plt.savefig(f"/lustre/research/hep/akshriva/Dream-Timing/MCP/Delta_t50_Results//waveform_run{run_number}_event{event_idx}.png")
+    plt.close()
 
-    return t50_idx * SAMPLE_TIME_ps, wf_bs, (ten_idx, ninety_idx, peak)
+def plot_debug(event_idx, signal):
+    idxs = np.arange(len(signal))
+    plt.plot(idxs, signal, label="pulse")
+    #ymin = min(np.min(signal)-50)
+    #ymax = max(np.max(signal)+50)
+    plt.ylim(2000, 3000)
+    plt.legend()
+    plt.tight_layout()
+    os.makedirs("plots", exist_ok=True)
+    plt.savefig(f"/lustre/research/hep/akshriva/Dream-Timing/MCP/Delta_t50_Results//debug_pulse_run{run_number}_event{event_idx}.png")
+    plt.close()
 
-# ============================
-# Gaussian fit (NumPy-only)
-# ============================
-def gaussian(x, A, mu, sigma):
-    return A * np.exp(-(x - mu)**2 / (2 * sigma**2))
+# === Main event loop ===
+nEvents = tree.num_entries
 
-def fit_gaussian_numpy(bin_centers, counts):
-    A0 = np.max(counts)
-    mu0 = np.sum(bin_centers * counts) / np.sum(counts)
-    sigma0 = np.sqrt(np.sum(counts * (bin_centers - mu0)**2) / np.sum(counts))
+for i in range(nEvents):
+    # ---------- MCP1 (ch6) ----------
+    try:
+        waveform = channels["ch6"][i]
+        baseline, rms = find_baseline(waveform)
+        region, indices, amplitude = fit_region(waveform, baseline)
+        if i < 10:
+            plot_debug(i, waveform)
+        if amplitude >= 5 * rms:
+            slope, intercept = fit_rising_edge(region, indices)
+            ts, t_ps = extract_true_time(slope, intercept, baseline, amplitude)
+            mcp1_time.append(t_ps)
+            #if i < 10:
+            #    plot_waveform(i, waveform, slope, intercept, t_ps)
+        else:
+            #print(f"[Event MCP1 {i}] Skipped: amplitude below threshold ({amplitude:.2f} < {5*rms:.2f})")
+            mcp1_time.append(None)
 
-    def residual(params):
-        A, mu, sigma = params
-        return np.sum((counts - gaussian(bin_centers, A, mu, sigma))**2)
+    except Exception as e:
+        print(f"[Event MCP1 {i}] Failed: {e}")
+        mcp1_time.append(None)
 
-    A, mu, sigma = A0, mu0, sigma0
-    for _ in range(400):  # coordinate descent
-        for i, p in enumerate([A, mu, sigma]):
-            for d in [1e-3, -1e-3]:
-                trial = [A, mu, sigma]
-                trial[i] += d
-                if residual(trial) < residual([A, mu, sigma]):
-                    A, mu, sigma = trial
-    return A, mu, abs(sigma)
+    if i % 1000 == 0:
+        print(f"Processed MCP1 {i}/{nEvents}")
+        gc.collect()
+
+    # ---------- MCP2 (ch7) ----------
+    try:
+        waveform = channels["ch7"][i]
+        baseline, rms = find_baseline(waveform)
+        region, indices, amplitude = fit_region(waveform, baseline)
+
+        if amplitude >= 5 * rms:
+            slope, intercept = fit_rising_edge(region, indices)
+            ts, t_ps = extract_true_time(slope, intercept, baseline, amplitude)
+            mcp2_time.append(t_ps)
+            # if i < 10:
+            #     plot_waveform(i, waveform, slope, intercept, t_ps)
+        else:
+            #print(f"[Event MCP2 {i}] Skipped: amplitude below threshold ({amplitude:.2f} < {5*rms:.2f})")
+            mcp2_time.append(None)
+
+    except Exception as e:
+        print(f"[Event MCP2 {i}] Failed: {e}")
+        mcp2_time.append(None)
+
+    if i % 1000 == 0:
+        print(f"Processed MCP2 {i}/{nEvents}")
+        gc.collect()
+
+    # ---------- Cerenkov27 (ch0) ----------
+    try:
+        waveform = channels["ch0"][i]
+        baseline, rms = find_baseline(waveform)
+        region, indices, amplitude = fit_region(waveform, baseline)
+        if amplitude >= 5 * rms:
+            slope, intercept = fit_rising_edge(region, indices)
+            ts, t_ps = extract_true_time(slope, intercept, baseline, amplitude)
+            ch0_time.append(t_ps)
+            # if i < 30:
+            #     plot_waveform(i, waveform, slope, intercept, t_ps)
+        else:
+            #print(f"[Event Ceren27 {i}] Skipped: amplitude below threshold ({amplitude:.2f} < {5*rms:.2f})")
+            ch0_time.append(None)
+
+    except Exception as e:
+        print(f"[Event Ceren27 {i}] Failed: {e}")
+        ch0_time.append(None)
+
+    if i % 1000 == 0:
+        print(f"Processed Ceren27 {i}/{nEvents}")
+        gc.collect()
+
+    # ---------- Cerenkov29 (ch2) ----------
+    try:
+        waveform = channels["ch2"][i]
+        baseline, rms = find_baseline(waveform)
+        region, indices, amplitude = fit_region(waveform, baseline)
+
+        if amplitude >= 5 * rms:
+            slope, intercept = fit_rising_edge(region, indices)
+            ts, t_ps = extract_true_time(slope, intercept, baseline, amplitude)
+            ch2_time.append(t_ps)
+            # if i < 10:
+            #     plot_waveform(i, waveform, slope, intercept, t_ps)
+        else:
+            #print(f"[Event Ceren29 {i}] Skipped: amplitude below threshold ({amplitude:.2f} < {5*rms:.2f})")
+            ch2_time.append(None)
+
+    except Exception as e:
+        print(f"[Event Ceren29 {i}] Failed: {e}")
+        ch2_time.append(None)
+
+    if i % 1000 == 0:
+        print(f"Processed Ceren29 {i}/{nEvents}")
+        gc.collect()
+    
+        # ---------- Cerenkov31 (ch4) ----------
+    try:
+        waveform = channels["ch4"][i]
+        baseline, rms = find_baseline(waveform)
+        region, indices, amplitude = fit_region(waveform, baseline)
+
+        if amplitude >= 5 * rms:
+            slope, intercept = fit_rising_edge(region, indices)
+            ts, t_ps = extract_true_time(slope, intercept, baseline, amplitude)
+            ch4_time.append(t_ps)
+            # if i < 10:
+            #     plot_waveform(i, waveform, slope, intercept, t_ps)
+        else:
+            #print(f"[Event Ceren31 {i}] Skipped: amplitude below threshold ({amplitude:.2f} < {5*rms:.2f})")
+            ch4_time.append(None)
+
+    except Exception as e:
+        print(f"[Event Ceren31 {i}] Failed: {e}")
+        ch4_time.append(None)
+
+    if i % 1000 == 0:
+        print(f"Processed Ceren31 {i}/{nEvents}")
+        gc.collect()
+    
+        # ---------- Scin28 (ch1) ----------
+    try:
+        waveform = channels["ch1"][i]
+        baseline, rms = find_baseline(waveform)
+        region, indices, amplitude = fit_region(waveform, baseline)
+
+        if amplitude >= 5 * rms:
+            slope, intercept = fit_rising_edge(region, indices)
+            ts, t_ps = extract_true_time(slope, intercept, baseline, amplitude)
+            ch1_time.append(t_ps)
+            # if i < 10:
+            #     plot_waveform(i, waveform, slope, intercept, t_ps)
+        else:
+            #print(f"[Event SCin28 {i}] Skipped: amplitude below threshold ({amplitude:.2f} < {5*rms:.2f})")
+            ch1_time.append(None)
+
+    except Exception as e:
+        print(f"[Event SCin28 {i}] Failed: {e}")
+        ch1_time.append(None)
+
+    if i % 1000 == 0:
+        print(f"Processed Scin28 {i}/{nEvents}")
+        gc.collect()
+    
+        # ---------- Scin30 (ch3) ----------
+    try:
+        waveform = channels["ch3"][i]
+        baseline, rms = find_baseline(waveform)
+        region, indices, amplitude = fit_region(waveform, baseline)
+
+        if amplitude >= 5 * rms:
+            slope, intercept = fit_rising_edge(region, indices)
+            ts, t_ps = extract_true_time(slope, intercept, baseline, amplitude)
+            ch3_time.append(t_ps)
+            # if i < 10:
+            #     plot_waveform(i, waveform, slope, intercept, t_ps)
+        else:
+            #print(f"[Event SCin30 {i}] Skipped: amplitude below threshold ({amplitude:.2f} < {5*rms:.2f})")
+            ch3_time.append(None)
+
+    except Exception as e:
+        print(f"[Event SCin30 {i}] Failed: {e}")
+        ch3_time.append(None)
+
+    if i % 1000 == 0:
+        print(f"Processed Scin30 {i}/{nEvents}")
+        gc.collect()
+    
+        # ---------- Scin32 (ch5) ----------
+    try:
+        waveform = channels["ch5"][i]
+        baseline, rms = find_baseline(waveform)
+        region, indices, amplitude = fit_region(waveform, baseline)
+
+        if amplitude >= 5 * rms:
+            slope, intercept = fit_rising_edge(region, indices)
+            ts, t_ps = extract_true_time(slope, intercept, baseline, amplitude)
+            ch5_time.append(t_ps)
+            # if i < 10:
+            #     plot_waveform(i, waveform, slope, intercept, t_ps)
+        else:
+            #print(f"[Event SCin32 {i}] Skipped: amplitude below threshold ({amplitude:.2f} < {5*rms:.2f})")
+            ch5_time.append(None)
+
+    except Exception as e:
+        print(f"[Event SCin32 {i}] Failed: {e}")
+        ch5_time.append(None)
+
+    if i % 1000 == 0:
+        print(f"Processed Scin32 {i}/{nEvents}")
+        gc.collect()
+# Done
+print("Finished processing.")
+
+# mask = ~np.isnan(mcp1_time) & ~np.isnan(mcp2_time)
+
+# # Perform subtraction only on the non-NaN elements
+# result = np.full_like(mcp1_time, np.nan) # Initialize result array with NaNs
+# result[mask] = mcp1_time[mask] - mcp2_time[mask]
+
+# === Plotting ===
+def plot_and_save(data, title, xlabel, filename):
+    data = np.array([np.nan if x is None else x for x in data], dtype=np.float64)
+
+    # Remove NaNs, Infs, and unphysical extremes
+    data_clean = data[~np.isnan(data) & ~np.isinf(data) & (data > -1e6) & (data < 1e6)]
+
+    # Compute stats directly from NumPy array
+    if len(data_clean) == 0:
+        print(f"[WARNING] No valid data for {filename}")
+        return
+
+    mean = np.mean(data_clean)
+    std = np.std(data_clean)
+    entries = len(data_clean)
+    plt.figure(figsize=(8, 6))
+    plt.hist([x for x in data_clean if x is not None], bins=50, range=[-50000,200000], histtype='stepfilled', color='red', alpha=0.7,
+             label=f"N={entries}\nμ={mean:.2f}\nσ={std:.2f}")
+    plt.title(f"{title} (Run {run_number})")
+    plt.xlabel(xlabel)
+    plt.ylabel("Counts")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(f"/lustre/research/hep/akshriva/Dream-Timing/MCP/Delta_t50_Results/{filename}_run{run_number}.png")
+    plt.close()
 
 
-# ============================
-# PROCESS ALL EVENTS
-# ============================
-with uproot.open(FILE) as f:
-    tree = f["EventTree"]
-    combined_results = []
-    for board in range(4):
-        print(f"\nProcessing Board {board} ...")
-        channels = [
-            f"DRS_Board{board}_Group3_Channel6",
-            f"DRS_Board{board}_Group3_Channel7"
-        ]
+def plot_diff_and_save(data1, data2, title, xlabel, filename,plot_lim):
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    data1 = np.array([np.nan if x is None else x for x in data1], dtype=np.float64)
+    data2 = np.array([np.nan if x is None else x for x in data2], dtype=np.float64)
 
-        t50_map = {ch: [] for ch in channels}
+    # --- Mask to filter out NaNs and Infs ---
+    valid_mask = (
+        ~np.isnan(data1) & ~np.isinf(data1) &
+        ~np.isnan(data2) & ~np.isinf(data2)
+    )
 
-        # iterate over ALL events
-        for arrays in tree.iterate(channels, step_size=500):
-            ch6_arr = arrays[channels[0]]
-            ch7_arr = arrays[channels[1]]
+    if not np.any(valid_mask):
+        print(f"[WARNING] No valid data for {filename}")
+        return
 
-            for i in range(len(ch6_arr)):
-                wf6 = ch6_arr[i]
-                wf7 = ch7_arr[i]
+    # --- Compute difference ---
+    data_diff = data1[valid_mask] - data2[valid_mask]
 
-                t50_6, _, _ = t50_firstpeak_threshold(wf6)
-                t50_7, _, _ = t50_firstpeak_threshold(wf7)
+    # --- Apply cut for fitting/stats ---
+    fit_mask = (data_diff > -200000) & (data_diff < 200000)
+    data_cut = data_diff[fit_mask]
 
-                t50_map[channels[0]].append(t50_6)
-                t50_map[channels[1]].append(t50_7)
+    if len(data_cut) == 0:
+        print(f"[WARNING] No data in fitting range for {filename}")
+        return
 
-        # compute Δt50
-        t6 = np.array([v if v is not None else np.nan for v in t50_map[channels[0]]])
-        t7 = np.array([v if v is not None else np.nan for v in t50_map[channels[1]]])
-        mask = ~np.isnan(t6) & ~np.isnan(t7)
-        delta_t = (t6 - t7)[mask]
+    # --- Define Gaussian function ---
+    def gauss(x, A, mu, sigma):
+        return A * np.exp(-((x - mu) ** 2) / (2 * sigma ** 2))
 
-        print(f"Board {board}: valid Δt50 = {len(delta_t)} events")
+    # --- Histogram parameters ---
+    bins = 50
+    counts, bin_edges = np.histogram(data_cut, bins=bins, range=plot_lim)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
-        if len(delta_t) == 0:
-            continue
+    # --- Initial fit guess ---
+    p0 = [np.max(counts), np.mean(data_cut), np.std(data_cut)]
 
-        # Histogram + Gaussian fit
-        fig, ax = plt.subplots(figsize=(8,6))
-        counts, bips, _ = ax.hist(delta_t, bins=1000, histtype="step", label="Δt50",color='black')
-        centers = 0.5*(bips[:-1] + bips[1:])
-        
-        A, mu, sigma = fit_gaussian_numpy(centers, counts)
-        fwhm = 2.355 * sigma
+    try:
+        popt, _ = curve_fit(gauss, bin_centers, counts, p0=p0)
+        A_fit, mu_fit, sigma_fit = popt
+    except RuntimeError:
+        print(f"[WARNING] Gaussian fit failed for {filename}")
+        mu_fit, sigma_fit = np.nan, np.nan
 
-        xfit = np.linspace(min(delta_t), max(delta_t), 400)
-        yfit = gaussian(xfit, A, mu, sigma)
-        ax.plot(xfit, yfit, 'k-', lw=2, color = 'red',
-                label=(f"Gaussian Fit\n"
-                       f"μ = {mu:.3f} ns\n"
-                       f"σ = {sigma:.3f} ns\n"
-                       f"FWHM = {fwhm:.3f} ns"))
+    # --- Basic stats on filtered data ---
+    mean = np.mean(data_cut)
+    std = np.std(data_cut)
+    entries = len(data_cut)
 
-        ax.set_xlabel("Δt50 [ps]")
-        ax.set_ylabel("Counts")
-        ax.set_title(f"Board {board} Δt50 Histogram")
-        ax.grid(True)
-        ax.legend()
+    # --- Plotting ---
+    plt.figure(figsize=(8, 6))
 
-        plt.tight_layout()
-        plt.savefig(os.path.join(OUTPUT_DIR, f"Board{board}_Delta_t50_hist.png"))
-        plt.close()
+    # Histogram
+    plt.hist(data_cut, bins=bins, range=plot_lim, histtype='stepfilled',
+             color='red', alpha=0.7, label="Data")
 
-        print(f"Board {board}: fit → μ={mu:.3f} ps, σ={sigma:.3f} ps")
-        combined_results.append({"board": board,
-            "delta_t": delta_t,
-            "A": A,
-            "mu": mu,
-            "sigma": sigma
-        })
-    # ============================
-    # Combined Δt50 Plot (all boards)
-    # ============================
-    if len(combined_results) > 0:
-        fig, ax = plt.subplots(figsize=(9,6))
+    # Gaussian fit curve
+    if not np.isnan(mu_fit):
+        x_fit = np.linspace(plot_lim[0], plot_lim[1], 1000)
+        plt.plot(x_fit, gauss(x_fit, *popt), 'k-', linewidth=2, label="Gaussian fit")
 
-        colors = ['C0', 'C1', 'C2', 'C3']
+    # Stats box (top-left)
+    plt.text(0.05, 0.95,
+             f"Entries = {entries}\n"
+             f"μ = {mean:.2f}\n"
+             f"σ = {std:.2f}\n"
+             f"Fit μ = {mu_fit:.2f}\n"
+             f"Fit σ = {sigma_fit:.2f}",
+             transform=plt.gca().transAxes,
+             verticalalignment='top',
+             horizontalalignment='left',
+             bbox=dict(facecolor='white', alpha=0.8, edgecolor='black'))
 
-        for i, res in enumerate(combined_results):
-            board = res["board"]
-            dt    = res["delta_t"]
-            A     = res["A"]
-            mu    = res["mu"]
-            sigma = res["sigma"]
-            fwhm  = 2.355 * sigma
-            
-            # Histogram
-            # counts, bins, _ = ax.hist(
-            #      dt,
-            #      bins=50,
-            #      histtype="step",
-            #      color=colors[i],
-            #      linewidth=1.8,
-            #      label=f"Board {board}: μ={mu:.3f}, σ={sigma:.3f}, FWHM={fwhm:.3f}"
-            #  )
+    # Labels and formatting
+    plt.title(f"{title} (Run {run_number})")
+    plt.xlabel(xlabel)
+    plt.ylabel("Counts")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(f"/lustre/research/hep/akshriva/Dream-Timing/MCP/Delta_t50_Results/{filename}_run{run_number}.pdf")
+    plt.close()
 
-            # # Gaussian curve
-            # centers = 0.5 * (bins[:-1] + bins[1:])
-            xfit = np.linspace(min(dt), max(dt), 400)
-            yfit = gaussian(xfit, A, mu, sigma)
-            ax.plot(xfit, yfit, color=colors[i], linestyle='--',label=f"Board {board}: μ={mu:.3f}, σ={sigma:.3f}, FWHM={fwhm:.3f}")
 
-        ax.set_xlabel("Δt50 [ns]")
-        ax.set_ylabel("Counts")
-        ax.set_title("Δt50 Comparison — All Boards")
-        ax.grid(True)
-        ax.legend(fontsize=9)
-        plt.tight_layout()
-        plt.savefig(os.path.join(OUTPUT_DIR, "AllBoards_Delta_t50_Combined.png"))
-        plt.close()
+###########################################################################################
+#################           START OF PLOTTING TIME DIFFERENCES ############################
+###########################################################################################
 
-        print("\nSaved combined histogram: AllBoards_Delta_t50_Combined.png")
+plot_diff_and_save(mcp1_time,mcp2_time, "MCP1 - MCP2 Time Difference", "Δt [ps]", "mcp_delta_between_gaus", [-250, 1500])
+plot_and_save(mcp1_time, "MCP1 Time", "Time [ps]", "mcp1_time")
+plot_and_save(mcp2_time, "MCP2 Time", "Time [ps]", "mcp2_time")
 
+channel_times = [
+    ("ch0", ch0_time),
+    ("ch1", ch1_time),
+    ("ch2", ch2_time),
+    ("ch3", ch3_time),
+    ("ch4", ch4_time),
+    ("ch5", ch5_time),
+]
+
+for name, arr in channel_times:
+    plot_diff_and_save(arr, mcp1_time, f"{name} time difference - MCP1", "Δt [ps]", f"mcp1_{name}_delta", [0, 20000])
+    plot_diff_and_save(arr, mcp2_time, f"{name} time difference - MCP2", "Δt [ps]", f"mcp2_{name}_delta", [0, 20000])
+    plot_and_save(arr, f"{name} Time", "Time [ps]", f"{name}_time")
