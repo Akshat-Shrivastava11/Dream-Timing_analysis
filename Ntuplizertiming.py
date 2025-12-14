@@ -1,231 +1,196 @@
+"""
+================================================================================
+ TRUE TIMING RECONSTRUCTION — MULTIPROCESSING (MEMORY-SAFE)
+================================================================================
+
+Boards processed:
+  • Boards 0–3 only
+
+Channel conventions:
+  • Channel 8  : trigger channel (t_trigfit)
+  • Group 3    : MCP group
+  • Group 3 Ch6, Ch7 : MCP timing channels
+
+Definitions:
+
+  Δt_MCP(b) = t_fit(b,3,6) − t_fit(b,3,7)
+
+  ttrue(b,g,c) = t_fit(b,g,c) − t_trigfit(b,g)
+
+  trueminusdeltat(b,g,c) = ttrue(b,g,c) − Δt_MCP(b)
+
+Output ROOT contains:
+  • deltat_MCP_BoardX
+  • ttrue_BoardX_GroupY_ChannelZ
+  • trueminusdeltat_BoardX_GroupY_ChannelZ
+
+Units assumed: ns
+================================================================================
+"""
+
 import uproot
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy.stats import norm
+import matplotlib.pyplot as plt              # required by user (unused)
+from scipy.stats import norm                 # required by user (unused)
 from multiprocessing import Pool, cpu_count
-from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.backends.backend_pdf import PdfPages  # required by user (unused)
 from tqdm import tqdm
 import time
-import os
+import os                                    # required by user (unused)
 
 # ================= USER SETTINGS =================
 INPUT_FILE  = "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1468_250927145556_TimingDAQ.root"
 TREE_NAME   = "EventTree"
-OUTPUT_FILE = "/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/run1468_250927145556_TimingDAQut_postTrue.root"
+OUTPUT_FILE = "/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/run1468_250927145556_TimingDAQ_afteranalysis.root"
 
-NB = 7   # boards 0–6 (Board 7 ignored)
-NG = 4   # groups 0–3
-NC = 9   # channels 0–8
+NG = 4
+NC = 9
+TRUE_BOARDS = range(4)
 # =================================================
 
 
-# ================= IGNORE BOARD 7 =================
-IGNORE_PREFIXES = [
-    "DRS_Board7_Group0_Channel",
-    "DRS_Board7_Group1_Channel",
-    "DRS_Board7_Group2_Channel",
-    "DRS_Board7_Group3_Channel",
-]
-
-
-def is_ignored(branch):
-    return any(branch.startswith(p) for p in IGNORE_PREFIXES)
-
-
 # ================= HELPERS =================
-def br(b, g, c, var):
+def br(b, g, c, var="LP2_50"):
     return f"DRS_Board{b}_Group{g}_Channel{c}_{var}"
-
 
 def valid_channel(g, c):
     if c == 8:
-        return False            # trigger
+        return False
     if g == 3 and c in (6, 7):
-        return False            # MCP channels
+        return False
     return True
 
+def board_branchlist(b):
+    needed = set()
 
-# ================= PDF WORKERS =================
-def make_deltat_pdf(args):
-    b, data = args
-    mu, sigma = norm.fit(data)
+    # MCP Δt
+    needed.add(br(b, 3, 6))
+    needed.add(br(b, 3, 7))
 
-    plt.figure(figsize=(6,4))
-    plt.hist(data, bins=200, density=True, alpha=0.7)
-    x = np.linspace(data.min(), data.max(), 1000)
-    plt.plot(x, norm.pdf(x, mu, sigma), "r-")
-    plt.xlabel("Δt MCP [ns]")
-    plt.ylabel("Density")
-    plt.title(f"MCP Δt Board {b}\nμ={mu:.3f}, σ={sigma:.3f}")
-    plt.tight_layout()
-    plt.savefig(f"deltat_MCP_board{b}.pdf")
-    plt.close()
+    # Triggers
+    for g in range(NG):
+        needed.add(br(b, g, 8))
+
+    # Detector channels
+    for g in range(NG):
+        for c in range(NC):
+            if valid_channel(g, c):
+                needed.add(br(b, g, c))
+
+    return sorted(needed)
 
 
-def make_ttrue_page(args):
-    (b, g, c), data = args
+# ================= WORKER =================
+def process_board(b):
+    """
+    Worker computes:
+      • Δt_MCP(b)
+      • ttrue(b,g,c)
+      • trueminusdeltat(b,g,c)
+    """
+    with uproot.open(INPUT_FILE) as f:
+        tree = f[TREE_NAME]
+        arrays = tree.arrays(board_branchlist(b), library="np")
 
-    plt.figure(figsize=(6,4))
-    plt.hist(data, bins=200, histtype="step", linewidth=1.5)
-    plt.xlabel("t_true [ns]")
-    plt.ylabel("Events")
-    plt.title(f"t_true Board {b} Group {g} Channel {c}")
-    plt.tight_layout()
+    # MCP Δt
+    ch6 = br(b, 3, 6)
+    ch7 = br(b, 3, 7)
+    if ch6 not in arrays or ch7 not in arrays:
+        return {}, {}, {}
 
-    fname = f"tmp_ttrue_b{b}_g{g}_c{c}.pdf"
-    plt.savefig(fname)
-    plt.close()
-    return fname
+    deltat_mcp = arrays[ch6] - arrays[ch7]
+
+    ttrue = {}
+    trueminusdeltat = {}
+
+    for g in range(NG):
+        trig = br(b, g, 8)
+        if trig not in arrays:
+            continue
+
+        t_trig = arrays[trig]
+
+        for c in range(NC):
+            if not valid_channel(g, c):
+                continue
+
+            ch = br(b, g, c)
+            if ch not in arrays:
+                continue
+
+            ttrue_val = arrays[ch] - t_trig
+            ttrue[(b, g, c)] = ttrue_val
+            trueminusdeltat[(b, g, c)] = ttrue_val - deltat_mcp
+
+    return {b: deltat_mcp}, ttrue, trueminusdeltat
 
 
 # ================= MAIN =================
 def main():
-
     t0 = time.time()
-    print("="*90)
-    print(" TRUE TIMING RECONSTRUCTION (FINAL, UPROOT + MULTIPROCESSING)")
-    print("="*90)
+    print("=" * 90)
+    print(" TRUE TIMING RECONSTRUCTION (MULTIPROCESSING)")
+    print("=" * 90)
 
-    # ---------- READ ROOT ----------
-    print("\n[1/6] Reading ROOT file")
+    # ---------- EVENT COUNT ----------
+    print("\n[1/4] Reading ROOT file (minimal)")
     with uproot.open(INPUT_FILE) as f:
         tree = f[TREE_NAME]
-        all_arrays = tree.arrays(library="np")
+        probe = br(0, 0, 8)
+        key = probe if probe in tree.keys() else tree.keys()[0]
+        n_events = len(tree[key].array(library="np"))
 
-    print(f"  → Total branches read: {len(all_arrays)}")
+    print(f"  → Events : {n_events:,}")
+    print(f"  → Boards : {list(TRUE_BOARDS)}")
 
-    # ---------- FILTER BOARD 7 ----------
-    print("\n[2/6] Removing Board 7 branches")
-    arrays = {
-        k: v for k, v in all_arrays.items()
-        if not is_ignored(k)
-    }
+    # ---------- MULTIPROCESSING ----------
+    print("\n[2/4] Computing derived quantities")
+    nproc = min(cpu_count(), len(TRUE_BOARDS))
+    print(f"  → Using {nproc} processes")
 
-    print(f"  → Branches kept   : {len(arrays)}")
-    print(f"  → Branches removed: {len(all_arrays) - len(arrays)}")
-
-    n_events = len(next(iter(arrays.values())))
-    print(f"  → Events: {n_events:,}")
-    print(f"  → Time elapsed: {time.time() - t0:.1f} s")
-
-    # ---------- MCP Δt ----------
-    print("\n[3/6] Computing MCP Δt per board")
     deltat_mcp = {}
-
-    for b in tqdm(range(NB), desc="Boards (MCP Δt)"):
-        sig = br(b,3,6,"LP2_50")
-        trg = br(b,3,7,"LP2_50")
-
-        if sig not in arrays or trg not in arrays:
-            print(f"  !! Board {b}: MCP branches missing, skipping")
-            continue
-
-        deltat_mcp[b] = arrays[sig] - arrays[trg]
-
-    print(f"  → MCP reference built for {len(deltat_mcp)} boards")
-
-    # ---------- t_true ----------
-    print("\n[4/6] Computing t_true for all valid channels")
     ttrue = {}
+    trueminusdeltat = {}
 
-    for b in tqdm(range(NB), desc="Boards (t_true)"):
-        if b not in deltat_mcp:
-            continue
+    with Pool(nproc) as pool:
+        for d_b, t_b, tm_b in tqdm(
+            pool.imap_unordered(process_board, TRUE_BOARDS),
+            total=len(TRUE_BOARDS),
+            desc="Boards"
+        ):
+            deltat_mcp.update(d_b)
+            ttrue.update(t_b)
+            trueminusdeltat.update(tm_b)
 
-        for g in range(NG):
-            trig = br(b,g,8,"LP2_50")
-            if trig not in arrays:
-                continue
-
-            t_trig = arrays[trig]
-
-            for c in range(NC):
-                if not valid_channel(g, c):
-                    continue
-
-                ch = br(b,g,c,"LP2_50")
-                if ch not in arrays:
-                    continue
-
-                ttrue[(b,g,c)] = (
-                    arrays[ch]
-                    - t_trig
-                    + deltat_mcp[b]
-                )
-
-    print(f"  → t_true channels computed: {len(ttrue)}")
-    print(f"  → Time elapsed: {time.time() - t0:.1f} s")
+    print(f"  → Δt_MCP boards            : {len(deltat_mcp)}")
+    print(f"  → ttrue channels           : {len(ttrue)}")
+    print(f"  → trueminusdeltat channels : {len(trueminusdeltat)}")
 
     # ---------- WRITE ROOT ----------
-    #print("\n[5/6] Writing output ROOT file")
-    #out_branches = dict(arrays)
-    print("\n[5/6] Writing output ROOT file (derived quantities only)")
+    print("\n[3/4] Writing output ROOT file")
+    out = {}
 
-    out_branches = {}
-
-    # MCP Δt
+    # Δt per board
     for b, arr in deltat_mcp.items():
-        out_branches[f"deltat_MCP_Board{b}"] = arr
+        out[f"deltat_MCP_Board{b}"] = arr
 
-    # t_true
-    for (b,g,c), arr in ttrue.items():
-        out_branches[f"ttrue_Board{b}_Group{g}_Channel{c}"] = arr
+    # ttrue
+    for (b, g, c), arr in ttrue.items():
+        out[f"ttrue_Board{b}_Group{g}_Channel{c}"] = arr
+
+    # trueminusdeltat
+    for (b, g, c), arr in trueminusdeltat.items():
+        out[f"trueminusdeltat_Board{b}_Group{g}_Channel{c}"] = arr
 
     with uproot.recreate(OUTPUT_FILE) as fout:
-        fout[TREE_NAME] = out_branches
+        fout[TREE_NAME] = out
 
-    print(f"  → ROOT file written: {OUTPUT_FILE}")
-    print(f"  → Branches written: {len(out_branches)}")
-
-    for b, arr in deltat_mcp.items():
-        out_branches[f"deltat_MCP_Board{b}"] = arr
-
-    for (b,g,c), arr in ttrue.items():
-        out_branches[f"ttrue_Board{b}_Group{g}_Channel{c}"] = arr
-
-    with uproot.recreate(OUTPUT_FILE) as fout:
-        fout[TREE_NAME] = out_branches
-
-    print(f"  → ROOT file written: {OUTPUT_FILE}")
-
-    # # ---------- PDFs ----------
-    # print("\n[6/6] Producing PDFs (multiprocessing)")
-    # nproc = min(cpu_count(), 8)
-    # print(f"  → Using {nproc} processes")
-
-    # with Pool(nproc) as pool:
-    #     list(tqdm(
-    #         pool.imap_unordered(make_deltat_pdf, deltat_mcp.items()),
-    #         total=len(deltat_mcp),
-    #         desc="Δt MCP PDFs"
-    #     ))
-
-    # with Pool(nproc) as pool:
-    #     tmp_files = list(tqdm(
-    #         pool.imap_unordered(make_ttrue_page, ttrue.items()),
-    #         total=len(ttrue),
-    #         desc="t_true PDFs"
-    #     ))
-
-    # print("  → Merging t_true PDFs")
-    # with PdfPages("ttrue_all_channels.pdf") as pdf:
-    #     for f in sorted(tmp_files):
-    #         img = plt.imread(f)
-    #         plt.figure(figsize=(6,4))
-    #         plt.imshow(img)
-    #         plt.axis("off")
-    #         pdf.savefig()
-    #         plt.close()
-    #         os.remove(f)
-
-    # print("\n" + "="*90)
-    # print("DONE")
-    # print(f"Total runtime: {time.time() - t0:.1f} s")
-    # print("Outputs:")
-    # print(f"  ROOT : {OUTPUT_FILE}")
-    # print("  PDFs : deltat_MCP_boardX.pdf")
-    # print("         ttrue_all_channels.pdf")
-    # print("="*90)
+    # ---------- DONE ----------
+    print("\n[4/4] Done")
+    print(f"  → Output file : {OUTPUT_FILE}")
+    print(f"  → Branches    : {len(out)}")
+    print(f"  → Runtime     : {time.time() - t0:.1f} s")
+    print("=" * 90)
 
 
 if __name__ == "__main__":
