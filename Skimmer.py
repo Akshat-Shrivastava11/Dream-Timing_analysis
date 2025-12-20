@@ -7,27 +7,26 @@ Boards processed:
   • Boards 0–3 only
 
 Channel conventions:
-  • Channel 8  : trigger channel
-  • Group 3    : MCP group
-  • Group 3 Ch6, Ch7 : MCP timing channels
+  • Channel 8        : trigger channel (per group)
+  • Group 3 Ch6, Ch7 : MCP channels
+  • MCP reference    : Group 3, Channel 7 (US MCP)
 
 Definitions (applied uniformly to ALL channels):
 
-  Δt_MCP(b) = t_fit(b,3,6) − t_fit(b,3,7)
-
-  ttrue(b,g,c) = t_fit(b,g,c) − t_trigfit(b,g)
-
-  trueminusdeltat(b,g,c) = ttrue(b,g,c) − Δt_MCP(b)
+  t_final(b,g,c) =
+      ( t_fit(b,g,c) − t_trig(b,g) )
+    − ( t_fit(b,3,7) − t_trig(b,g) )
 
 Notes:
-  • Trigger and MCP channels are included.
-  • Some channels may reduce to zero or trivial values.
-  • This is intentional for uniform downstream handling.
+  • The SAME trigger (Group g, Channel 8) is used in both subtractions.
+  • MCP correction is board-local and uses Group 3 MCP7.
+  • No cross-group trigger mixing is performed.
+  • Trigger and MCP channels are included and reduce to zero by construction.
+  • Uniform output is produced for downstream analysis.
 
 Units assumed: ns
 ================================================================================
 """
-
 import uproot
 import numpy as np
 import matplotlib.pyplot as plt              # required by user (unused)
@@ -41,7 +40,7 @@ import os                                    # required by user (unused)
 # ================= USER SETTINGS =================
 INPUT_FILE  = "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1468_250927145556_TimingDAQ.root"
 TREE_NAME   = "EventTree"
-OUTPUT_FILE = "/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/run1468_250927145556_TimingDAQ_postanalysis_allchannels.root"
+OUTPUT_FILE = "/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/skimmed_files/run1468_250927145556_TimingDAQ_postanalysis_allchannels.root"
 
 NG = 4
 NC = 9
@@ -55,16 +54,9 @@ def br(b, g, c, var="LP2_50"):
 
 def board_branchlist(b):
     needed = set()
-
-    # MCP Δt reference
-    needed.add(br(b, 3, 6))
-    needed.add(br(b, 3, 7))
-
-    # All channels, all groups (including trigger)
     for g in range(NG):
         for c in range(NC):
             needed.add(br(b, g, c))
-
     return sorted(needed)
 
 
@@ -72,24 +64,27 @@ def board_branchlist(b):
 def process_board(b):
     """
     Worker computes:
-      • Δt_MCP(b)
-      • ttrue(b,g,c)        for ALL channels
-      • trueminusdeltat(b,g,c) for ALL channels
+      • t_final(b,g,c) for ALL channels, ALL groups
+
+    MCP reference:
+      • Board b, Group 3, Channel 7
+
+    IMPORTANT:
+      • The SAME trigger (Group g, Channel 8) is used for both
+        channel and MCP7 subtraction.
     """
     with uproot.open(INPUT_FILE) as f:
         tree = f[TREE_NAME]
         arrays = tree.arrays(board_branchlist(b), library="np")
 
-    # MCP Δt
-    ch6 = br(b, 3, 6)
-    ch7 = br(b, 3, 7)
-    if ch6 not in arrays or ch7 not in arrays:
-        return {}, {}, {}
+    t_final = {}
 
-    deltat_mcp = arrays[ch6] - arrays[ch7]
+    # MCP7 raw timing (no trigger subtraction yet)
+    mcp_ref = br(b, 3, 7)
+    if mcp_ref not in arrays:
+        return {}
 
-    ttrue = {}
-    trueminusdeltat = {}
+    t_mcp7 = arrays[mcp_ref]
 
     for g in range(NG):
         trig = br(b, g, 8)
@@ -98,16 +93,19 @@ def process_board(b):
 
         t_trig = arrays[trig]
 
+        # MCP7 aligned to SAME trigger as channel
+        mcp_term = t_mcp7 - t_trig
+
         for c in range(NC):
             ch = br(b, g, c)
             if ch not in arrays:
                 continue
 
-            ttrue_val = arrays[ch] - t_trig
-            ttrue[(b, g, c)] = ttrue_val
-            trueminusdeltat[(b, g, c)] = ttrue_val - deltat_mcp
+            # (t_fit - t_trig_g) - (t_mcp7 - t_trig_g)
+            t_final_val = (arrays[ch] - t_trig) - mcp_term
+            t_final[(b, g, c)] = t_final_val
 
-    return {b: deltat_mcp}, ttrue, trueminusdeltat
+    return t_final
 
 
 # ================= MAIN =================
@@ -133,36 +131,24 @@ def main():
     nproc = min(cpu_count(), len(TRUE_BOARDS))
     print(f"  → Using {nproc} processes")
 
-    deltat_mcp = {}
-    ttrue = {}
-    trueminusdeltat = {}
+    t_final = {}
 
     with Pool(nproc) as pool:
-        for d_b, t_b, tm_b in tqdm(
+        for t_b in tqdm(
             pool.imap_unordered(process_board, TRUE_BOARDS),
             total=len(TRUE_BOARDS),
             desc="Boards"
         ):
-            deltat_mcp.update(d_b)
-            ttrue.update(t_b)
-            trueminusdeltat.update(tm_b)
+            t_final.update(t_b)
 
-    print(f"  → Δt_MCP boards            : {len(deltat_mcp)}")
-    print(f"  → ttrue channels           : {len(ttrue)}")
-    print(f"  → trueminusdeltat channels : {len(trueminusdeltat)}")
+    print(f"  → tfinal channels : {len(t_final)}")
 
     # ---------- WRITE ROOT ----------
     print("\n[3/4] Writing output ROOT file")
     out = {}
 
-    for b, arr in deltat_mcp.items():
-        out[f"deltat_MCP_Board{b}"] = arr
-
-    for (b, g, c), arr in ttrue.items():
-        out[f"ttrue_Board{b}_Group{g}_Channel{c}"] = arr
-
-    for (b, g, c), arr in trueminusdeltat.items():
-        out[f"trueminusdeltat_Board{b}_Group{g}_Channel{c}"] = arr
+    for (b, g, c), arr in t_final.items():
+        out[f"tfinal_Board{b}_Group{g}_Channel{c}"] = arr
 
     with uproot.recreate(OUTPUT_FILE) as fout:
         fout[TREE_NAME] = out
