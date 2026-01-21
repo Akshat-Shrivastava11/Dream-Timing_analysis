@@ -227,6 +227,72 @@ def process_board(job):
 
     return t_final
 
+def process_board(job):
+    """
+    Updated definition:
+      t_final(b,g,c) =
+          ( t_fit(b,g,c) - t_trig(b,g) )
+        - ( t_fit(b,3,7) - t_trig(b,3) )
+
+    MCP reference timing is always Board b, Group 3, Channel 7.
+    MCP trigger is always Board b, Group 3, Channel 8.
+    """
+    b, input_file, tree_name, particle, use_abs, add_cf, cf_key = job
+
+    # PID branches needed for event-level mask
+    services = list(get_particle_selection(particle).keys()) if particle else []
+
+    with uproot.open(input_file) as f:
+        tree = f[tree_name]
+        arrays = tree.arrays(board_branchlist(b, services=services), library="np")
+
+    # event mask (particle selection)
+    mask = build_particle_mask(arrays, particle)
+
+    # MCP reference raw timing
+    mcp_ref = br(b, 3, 7)
+    if mcp_ref not in arrays:
+        return {}
+
+    # Triggers: require group-3 trigger for MCP subtraction
+    trig3 = br(b, 3, 8)
+    if trig3 not in arrays:
+        return {}
+
+    t_mcp7 = arrays[mcp_ref][mask]
+    t_trig3 = arrays[trig3][mask]
+
+    corr3 = get_trig_correction(b, 3, cf_key) if add_cf else 0.0
+    t_trig3_corr = t_trig3 + corr3
+
+    # MCP term is fixed for all groups: (t_mcp7 - t_trig(b,3))
+    mcp_term = t_mcp7 - t_trig3_corr
+
+    t_final = {}
+
+    for g in range(NG):
+        trig_g = br(b, g, 8)
+        if trig_g not in arrays:
+            continue
+
+        t_trig_g = arrays[trig_g][mask]
+        corr_g = get_trig_correction(b, g, cf_key) if add_cf else 0.0
+        t_trig_g_corr = t_trig_g + corr_g
+
+        for c in range(NC):
+            ch = br(b, g, c)
+            if ch not in arrays:
+                continue
+
+            # (t_ch - t_trig_g) - (t_mcp7 - t_trig_3)
+            tf = (arrays[ch][mask] - t_trig_g_corr) - mcp_term
+
+            if use_abs:
+                tf = np.abs(tf)
+
+            t_final[(b, g, c)] = tf
+
+    return t_final
 
 # ---------------- MAIN ----------------
 def main():
@@ -252,7 +318,7 @@ def main():
 
     os.makedirs(outdir, exist_ok=True)
     base = os.path.splitext(os.path.basename(input_file))[0]
-    output_file = os.path.join(outdir, f"{base}_postaskim_allchannels.root")
+    output_file = os.path.join(outdir, f"{base}_postaskim_allchannels_newmethod.root")
 
     t0 = time.time()
     print("=" * 90)
