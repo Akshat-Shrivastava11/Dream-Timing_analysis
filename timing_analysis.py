@@ -542,6 +542,139 @@ def make_allboards_hist_only_singlepage():
 
     print(f"Saved: {pdf_path}")
 
+
+def _channel_ok_even(g, c):
+    # keep your original vetoes
+    if not _channel_ok(g, c):
+        return False
+    # even channels only
+    return (c % 2 == 0)
+
+
+def make_evenchannels_fitcentered_perboard(b, W=3.0):
+    """
+    Per board, one PDF with 4 pages (one per group).
+    Even channels only. Hist + fit, with x-limits centered around fitted peaks.
+    """
+    colors = plt.cm.tab10.colors
+    pdf_path = f"{OUTDIR}/Board{b}_evenChannels_fitCentered_hist_plus_fit.pdf"
+
+    bin_edges = np.linspace(XLIM_TFINAL[0], XLIM_TFINAL[1], NBINS + 1)
+    bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+    xlabel = _xlabel()
+
+    with uproot.open(ANA_FILE) as f:
+        tree = f[TREE_NAME]
+        keys = set(tree.keys())
+
+        # preload arrays for even channels only (this board)
+        data = {}
+        for g in range(NG):
+            for c in range(NC):
+                if not _channel_ok_even(g, c):
+                    continue
+                k = f"tfinal_Board{b}_Group{g}_Channel{c}"
+                if k in keys:
+                    data[(g, c)] = tree[k].array(library="np")
+
+    with PdfPages(pdf_path) as pdf:
+        for g in range(NG):
+            fig, ax = plt.subplots(figsize=(7.5, 5))
+
+            # --- first pass: fit each even channel to determine dynamic x-range ---
+            fit_params = {}  # c -> (A,mu,sigma,B)
+            mus = []
+            lo_list = []
+            hi_list = []
+
+            for c in range(NC):
+                if not _channel_ok_even(g, c):
+                    continue
+                if (g, c) not in data:
+                    continue
+
+                arr = data[(g, c)]
+                if arr.size < MIN_RAW:
+                    continue
+
+                arr_abs = np.abs(arr)
+                arr_abs = arr_abs[arr_abs >= CUT_MIN]
+                if arr_abs.size < MIN_ENTRIES:
+                    continue
+
+                hist, _ = np.histogram(arr_abs, bins=bin_edges)
+                popt = _fit_channel(bin_centers, hist, arr_abs)
+                if popt is None:
+                    continue
+
+                A, mu, sigma, B = popt
+                fit_params[c] = popt
+                mus.append(mu)
+                lo_list.append(mu - W * sigma)
+                hi_list.append(mu + W * sigma)
+
+            # dynamic x-range (fallback to global if no fits)
+            if len(lo_list) > 0:
+                xlo = max(XLIM_TFINAL[0], float(min(lo_list)))
+                xhi = min(XLIM_TFINAL[1], float(max(hi_list)))
+                # avoid degenerate windows
+                if (xhi - xlo) < 1.0:
+                    m = float(np.median(mus))
+                    xlo = max(XLIM_TFINAL[0], m - 1.0)
+                    xhi = min(XLIM_TFINAL[1], m + 1.0)
+            else:
+                xlo, xhi = XLIM_TFINAL
+
+            # --- second pass: plot hist + fit for even channels within that zoom ---
+            any_drawn = False
+            for c in range(NC):
+                if not _channel_ok_even(g, c):
+                    continue
+                if (g, c) not in data:
+                    continue
+
+                arr = data[(g, c)]
+                if arr.size < MIN_RAW:
+                    continue
+
+                arr_abs = np.abs(arr)
+                arr_abs = arr_abs[arr_abs >= CUT_MIN]
+                if arr_abs.size < MIN_ENTRIES:
+                    continue
+
+                hist, _ = np.histogram(arr_abs, bins=bin_edges)
+                col = colors[c % len(colors)]
+
+                ax.step(bin_centers, hist, where="mid", lw=1.0, color=col, alpha=0.75, label=f"C{c}")
+                any_drawn = True
+
+                if c in fit_params:
+                    popt = fit_params[c]
+                    A, mu, sigma, B = popt
+                    xfit = np.linspace(xlo, xhi, 600)
+                    yfit = folded_gaussian(xfit, *popt)
+                    ax.plot(xfit, yfit, color=col, lw=1.8, label=f"C{c} fit: μ={mu:.2f}, σ={sigma:.2f}")
+
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel("Events")
+            ax.set_title(f"Board {b} — Group {g} — EVEN channels only — fit-centered zoom")
+            ax.set_xlim(xlo, xhi)
+            ax.minorticks_on()
+            ax.tick_params(axis="both", which="major", length=6)
+            ax.tick_params(axis="both", which="minor", length=3)
+
+            if any_drawn:
+                ax.legend(fontsize=7, ncol=2, frameon=False)
+            else:
+                ax.text(0.5, 0.5, "No even-channel histograms passed cuts",
+                        ha="center", va="center", transform=ax.transAxes)
+
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    print(f"Saved: {pdf_path}")
+
 # ================= MAIN =================
 def main():
     print("Generating per-board PDFs (hist-only + hist+fit + gaussians-only-by-group). No CSV.")
@@ -560,6 +693,11 @@ def main():
     print("Generating file-level HIST-only PDFs (multi-page + single-page).")
     make_allboards_hist_only_multipage()
     make_allboards_hist_only_singlepage()
+
+    print("Generating EVEN-channel fit-centered zoom PDFs (one per board).")
+    for b in BOARDS:
+        make_evenchannels_fitcentered_perboard(b, W=3.0)
+
 
     
 
