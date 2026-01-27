@@ -1,37 +1,33 @@
 #!/usr/bin/env python3
 """
-TimingDAQ-like Python ntuplizer (multiprocessing, chunked IO) with logic matched to the provided C++:
+TimingDAQ-like Python ntuplizer (multiprocessing, chunked IO) with logic matched to the provided C++.
 
-Matches DRSAnalyzer.cc behavior for:
-  - baseline windowing using config->channels[i].baseline_time fractions
-  - optional HNR baseline removal: fit baseline region with const + A*sin(phi0 + omega*t)
-    (implemented as linear least-squares with fixed omega = 2*pi/75 ns^-1; same seed omega as C++)
-  - channel shift hack for indices i%9==8 and i<=287: shift by 150 samples, fill baseline, myTimeOffset=+30 ns
-  - scaling: scale_factor = config.getChannelMultiplicationFactor(i) (polarity included)
-  - baseline subtraction and scaling applied sample-by-sample (like C++)
-  - peak picking (idx_min/amp) with counter_auto_pol_switch rule (abs vs min)
-  - fittable logic thresholds
-  - auto polarity switch block behavior when counter_auto_pol_switch>0 (applied per-event; no shared mutation)
-  - GetIdxFirstCross walking logic
-  - LP2_50 via analytical polynomial solver analogue (time as function of amplitude)
-  - optional gaussian fit window selection and myTimeOffset
-  - optional linear rising-edge fit and myTimeOffset
+UPGRADES (critical for LP2_50 agreement vs C++):
+  1) Correctly parses your 8-column per-channel config lines:
+       CH POL BL_START BL_STOP AMP ATT ALGO WFILT
+     (Your previous parser assumed only 6 columns and therefore shifted tokens.)
+  2) Correctly maps branch name -> config channel index:
+       idx = board*36 + group*9 + channel
+     (Your previous loop used enumerate(sorted(branches)), which can misalign config rows.)
 
-Outputs:
-  - Minimal (default): per-channel
-        <channel>_t_peak
-        <channel>_LP2_50
+Everything else kept as-is, except small safety checks.
 
-  - If --all_features: additionally per-channel
-        <channel>_gaus_mean
-        <channel>_gaus_sigma
-        <channel>_gaus_chi2
-        <channel>_linear_RE_<NN>        for NN=int(100*f) over config.constant_fraction
-        <channel>_linear_RE__<TT>mV     for TT=int(abs(thr)) over config.constant_threshold
+Run example:
+  python3 Fituplizertiming.py \
+    -i in.root -o out.root --outdir . \
+    --config /path/to/DRS_Service_TTU_2025_Sep.config \
+    --nproc 4 --chunk 500 --verbose
 
-Dependencies:
-  - numpy, uproot, awkward, tqdm
-  - scipy optional (curve_fit for gaussian); otherwise moment fallback
+    python3 Fituplizertiming.py \
+  -i /lustre/research/hep/yofeng/HG-DREAM/CERN/ROOT/run1468_250927145556_converted.root \
+  -o run1468_250927145556_converted_timingskim.root \
+  --outdir /lustre/research/hep/akshriva/Dream-Timing/PostTimingFitskims \
+  --config /lustre/research/hep/cmadrid/TimingDAQ/DRS_Service_TTU_2025_Sep.config \
+  --tree EventTree \
+  --nproc 4 \
+  --chunk 500 \
+  --verbose
+
 """
 
 import argparse
@@ -61,7 +57,9 @@ except Exception:
 # ---------------------------
 NUM_SAMPLES = 900
 DT_NS = 0.2  # ns per sample; C++: time[i] = (200.0/1000.0)*i
+
 CHANNEL_RE = re.compile(r"^DRS_Board\d+_Group\d+_Channel\d+$")
+BR_RE = re.compile(r"^DRS_Board(\d+)_Group(\d+)_Channel(\d+)$")
 
 # C++ shift hack list equals: i%9==8 and i<=287
 SHIFT_MOD = 9
@@ -79,6 +77,20 @@ def is_channel_branch(name: str) -> bool:
 
 def ch_out(chname: str, var: str) -> str:
     return f"{chname}_{var}"
+
+
+def branch_to_cfg_index(chname: str, ng: int = 4, nc: int = 9) -> int:
+    """
+    Match C++ channel index convention:
+      idx = board*(ng*nc) + group*nc + channel
+    """
+    m = BR_RE.match(chname)
+    if not m:
+        raise ValueError(f"Not a DRS channel branch: {chname}")
+    b = int(m.group(1))
+    g = int(m.group(2))
+    c = int(m.group(3))
+    return b * (ng * nc) + g * nc + c
 
 
 # ---------------------------
@@ -112,7 +124,9 @@ class Config:
     def get_mult_factor(self, i: int) -> float:
         """
         Mimic config->getChannelMultiplicationFactor(i).
-        Your earlier convention: polarity * 10^(amp/20) * 10^(-att/20)
+        Assumption (matches your earlier convention):
+          polarity * 10^(amp/20) * 10^(-att/20)
+        If your C++ differs, paste getChannelMultiplicationFactor() body and we'll match exactly.
         """
         c = self.channels[i]
         pol = float(c.polarity)
@@ -134,6 +148,9 @@ def _parse_baseline_tokens_auto(a: float, b: float) -> Tuple[float, float]:
     Supports:
       - baseline <ch> <start_frac> <end_frac>   (if end<=1.0)
       - baseline <ch> <start_idx>  <n_samples>  (if end>1.0)
+
+    Also works for the in-line baseline fraction pair in your per-channel lines:
+      CH POL 0.00 0.15 ...
     """
     if b <= 1.0:
         st_frac = float(a)
@@ -153,13 +170,16 @@ def _parse_baseline_tokens_auto(a: float, b: float) -> Tuple[float, float]:
 
 def parse_config_file(path: str, verbose: bool = False) -> Config:
     """
-    Tries to follow the TimingDAQ config style used by your C++ code:
-      - ConstantFraction / ConstantThreshold lines (case-insensitive)
-      - baseline lines
-      - channel definition lines:
-            CH  POLARITY  AMPLIFICATION  ATTENUATION  ALGORITHM  FILTER_WIDTH
+    Supports BOTH styles:
 
-    Also supports underscore variants: constant_fraction, constant_threshold.
+    A) "baseline ch a b" lines (legacy)
+    B) Your actual per-channel format (8 columns):
+         CH POL BL_START BL_STOP AMP ATT ALGO WFILT
+       e.g. 0 - 0.00 0.15 0. 0. LP2+G40 0.
+
+    Globals:
+      ConstantFraction 20 50 80
+      ConstantThreshold -20
     """
     cfg = Config(verbose=verbose)
 
@@ -201,7 +221,7 @@ def parse_config_file(path: str, verbose: bool = False) -> Config:
                 cfg.constant_threshold = vals
                 continue
 
-            # ---- Baseline lines ----
+            # ---- Baseline lines (legacy) ----
             if key.lower() == "baseline" and len(toks) >= 4:
                 try:
                     ch = int(toks[1])
@@ -214,7 +234,61 @@ def parse_config_file(path: str, verbose: bool = False) -> Config:
                 cfg.channels[ch].baseline_time = _parse_baseline_tokens_auto(a, b)
                 continue
 
-            # ---- Per-channel definition ----
+            # ---- Per-channel definition: YOUR 8-column style ----
+            # CH  POL  BL_START  BL_STOP  AMP  ATT  ALGO  WFILT
+            if toks[0].isdigit() and len(toks) >= 8:
+                ch = int(toks[0])
+
+                pol_tok = toks[1]
+                if pol_tok == "+":
+                    polarity = +1
+                elif pol_tok == "-":
+                    polarity = -1
+                else:
+                    try:
+                        polarity = int(pol_tok)
+                    except Exception:
+                        polarity = +1
+
+                # baseline fractions in-line (0.00 0.15)
+                bl_a = float(toks[2])
+                bl_b = float(toks[3])
+
+                amplification = float(toks[4])
+                attenuation = float(toks[5])
+                algorithm = toks[6]
+                wfilt = float(toks[7])
+
+                c = ChannelCfg(
+                    N=ch,
+                    polarity=polarity,
+                    amplification=amplification,
+                    attenuation=attenuation,
+                    algorithm=algorithm,
+                    weierstrass_filter_width=wfilt,
+                )
+                c.baseline_time = _parse_baseline_tokens_auto(bl_a, bl_b)
+
+                # Re bounds if present: Re##-##
+                m = re_rebounds.search(algorithm)
+                if m:
+                    c.re_bounds = (int(m.group(1)) / 100.0, int(m.group(2)) / 100.0)
+
+                # G fraction if present: G##
+                m = re_gfrac.search(algorithm)
+                if m:
+                    c.gaus_fraction = int(m.group(1)) / 100.0
+
+                # LP degrees
+                for deg in (1, 2, 3):
+                    if f"LP{deg}" in algorithm:
+                        c.PL_deg.append(deg)
+
+                cfg.channels[ch] = c
+                continue
+
+            # ---- Back-compat 6-column style (if you ever use it) ----
+            # CH  POL  AMP  ATT  ALGO  WFILT
             if toks[0].isdigit() and len(toks) >= 6:
                 ch = int(toks[0])
 
@@ -243,17 +317,14 @@ def parse_config_file(path: str, verbose: bool = False) -> Config:
                     weierstrass_filter_width=wfilt,
                 )
 
-                # Re bounds if present: Re##-##
                 m = re_rebounds.search(algorithm)
                 if m:
                     c.re_bounds = (int(m.group(1)) / 100.0, int(m.group(2)) / 100.0)
 
-                # G fraction if present: G##
                 m = re_gfrac.search(algorithm)
                 if m:
                     c.gaus_fraction = int(m.group(1)) / 100.0
 
-                # LP degrees
                 for deg in (1, 2, 3):
                     if f"LP{deg}" in algorithm:
                         c.PL_deg.append(deg)
@@ -263,10 +334,7 @@ def parse_config_file(path: str, verbose: bool = False) -> Config:
 
             # unknown line ignored
 
-    # If config doesn't define constant_fraction, match your C++ InitLoop expectation:
-    # C++ only uses these if config->constant_fraction has entries.
     if not cfg.constant_fraction:
-        # default commonly used in your scripts; safe fallback
         cfg.constant_fraction = [0.15, 0.30, 0.45]
 
     return cfg
@@ -323,11 +391,6 @@ def hnr_fit_baseline(time_ns: np.ndarray, raw: np.ndarray, bl_st: int, bl_en: in
     """
     C++ does: f_bl = const + A*sin(phi0 + omega*x) with omega free (seed 2*pi/75).
     Here we fix omega=2*pi/75 and fit const + a*sin(omega*t) + b*cos(omega*t) via linear LS.
-    Then baseline const = fitted const, and f_eval(t) computed for subtraction.
-
-    Returns:
-      baseline_const (raw units),
-      f_eval array over full waveform (raw units)
     """
     t = time_ns[bl_st:bl_en].astype(float)
     y = raw[bl_st:bl_en].astype(float)
@@ -353,17 +416,15 @@ def _gaus(x, A, mu, sigma):
     return A * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
 
 
-def fit_gaussian_peak(t: np.ndarray, y: np.ndarray, j_down: int, j_up: int, amp: float, baseline_rms: float, frac: float) -> Tuple[float, float, float]:
-    """
-    Mimic C++ gaussian window and seeding logic as closely as practical.
-
-    C++:
-      ext_sigma = time[j_up]-time[j_down]
-      if (amp*frac < -baseline_RMS) ext_sigma *= 0.25;
-      p0 = amp*sqrt(2*pi)*ext_sigma; p1=time[idx_min]; p2=ext_sigma;
-    Note ROOT's "gaus" params: [0]=amplitude(height), [1]=mean, [2]=sigma.
-    But their seed [0] is "area-like". ROOT often still converges; in python we seed both ways.
-    """
+def fit_gaussian_peak(
+    t: np.ndarray,
+    y: np.ndarray,
+    j_down: int,
+    j_up: int,
+    amp: float,
+    baseline_rms: float,
+    frac: float,
+) -> Tuple[float, float, float]:
     if j_up <= j_down:
         return 0.0, 0.0, 0.0
 
@@ -375,20 +436,16 @@ def fit_gaussian_peak(t: np.ndarray, y: np.ndarray, j_down: int, j_up: int, amp:
     x = t[lo:hi + 1]
     yy = y[lo:hi + 1]
 
-    mu0 = float(x[np.argmin(yy)])  # for negative pulse, min is peak
+    mu0 = float(x[np.argmin(yy)])  # negative pulse: min is peak
     ext_sigma = float(max(x[-1] - x[0], 1e-6))
     if (amp * frac) < (-baseline_rms):
         ext_sigma *= 0.25
     sigma0 = float(max(ext_sigma, 1e-6))
 
-    # Two reasonable A seeds:
-    # (1) C++ style (area-like)
     A0_area = float(amp * np.sqrt(2.0 * np.pi) * sigma0)
-    # (2) peak height seed
     A0_height = float(amp)
 
     if _HAVE_SCIPY:
-        # try a couple seeds; keep best chi2
         best = None
         for A0 in (A0_height, A0_area):
             try:
@@ -405,7 +462,6 @@ def fit_gaussian_peak(t: np.ndarray, y: np.ndarray, j_down: int, j_up: int, amp:
         if best is not None:
             return best
 
-    # fallback: weighted moments using -yy
     w = np.clip(-yy, 0.0, None)
     if float(np.sum(w)) <= 0.0:
         return 0.0, 0.0, 0.0
@@ -427,13 +483,6 @@ def compute_features(
     ch_idx: int,
     all_features: bool,
 ) -> Dict[str, float]:
-    """
-    Returns dict with required features (t_peak, LP2_50) and optional extras.
-    Waveform input is RAW ADC counts (vector<float>) like C++ reads.
-
-    Important: We do NOT mutate cfg across events (safe for multiprocessing).
-    Where C++ mutates polarity/counter in config, we apply equivalent local inversions.
-    """
     c = cfg.channels[ch_idx]
     algo = c.algorithm
 
@@ -446,25 +495,20 @@ def compute_features(
     bl_en = max(bl_st + 1, min(bl_en, NUM_SAMPLES))
     bl_len = bl_en - bl_st
 
-    # Use raw baseline mean before any scale (C++)
     wf_raw = wf_raw_in.astype(float, copy=True)
     baseline = float(np.mean(wf_raw[bl_st:bl_en]))
 
-    # scale factor includes polarity (C++: getChannelMultiplicationFactor)
     scale_factor = float(cfg.get_mult_factor(ch_idx))
 
     # ------- HNR baseline removal option -------
-    # C++ fits only if algorithm contains "HNR", and then uses f->Eval(time[j]) for subtraction,
-    # and sets baseline = f->GetParameter(0).
     hnr_eval = None
     if "HNR" in algo:
         baseline, hnr_eval = hnr_fit_baseline(time, wf_raw, bl_st, bl_en)
 
     # ------- shift hack applied BEFORE subtraction (C++) -------
     myTimeOffset = 0.0
-    channel_raw = wf_raw  # this is the local "channel" vector in C++ (raw units)
+    channel_raw = wf_raw
     if (ch_idx % SHIFT_MOD == SHIFT_REM) and (ch_idx <= SHIFT_MAX_I):
-        # C++ creates channelNew filled with baseline (raw units)
         channel_new = np.full(NUM_SAMPLES, baseline, dtype=float)
         if SHIFT_SAMPLES < channel_raw.shape[0]:
             copy_len = min(channel_raw.shape[0] - SHIFT_SAMPLES, NUM_SAMPLES)
@@ -472,40 +516,30 @@ def compute_features(
         channel_raw = channel_new
         myTimeOffset = SHIFT_SAMPLES * DT_NS  # 30 ns
 
-        # If HNR is active, we need corresponding eval on shifted waveform.
-        # In C++ they reassign "channel" vector; f->Eval(time[j]) still uses same time grid.
-        # Our subtraction uses hnr_eval(time[j]) so it's fine.
-
-    # ------- baseline subtraction + scale sample-by-sample (C++ loop) -------
-    # C++ does subtraction inside the min-finding loop, but effect is simply:
-    # if HNR: channel = scale*(raw - f_eval(time))
-    # else  : channel = scale*(raw - baseline)
+    # ------- baseline subtraction + scale -------
     if hnr_eval is not None:
         channel = scale_factor * (channel_raw - hnr_eval)
     else:
         channel = scale_factor * (channel_raw - baseline)
 
-    # baseline_RMS computed on scaled, baseline-subtracted samples in baseline window (C++)
     baseline_RMS = float(np.sqrt(np.mean(channel[bl_st:bl_en] ** 2))) if bl_len > 0 else 0.0
 
-    # ------- peak picking (C++ logic) -------
+    # ------- peak picking -------
     idx_min = 0
     amp = 0.0
     for j in range(NUM_SAMPLES):
         range_check = (j > (bl_st + bl_len)) and (j < NUM_SAMPLES)
-
         if c.counter_auto_pol_switch > 0:
             max_check = abs(channel[j]) > abs(amp)
         else:
             max_check = channel[j] < amp
-
         if (range_check and max_check) or (j == (bl_st + bl_len)):
             idx_min = j
             amp = float(channel[j])
 
     out["t_peak"] = float(time[idx_min]) if 0 <= idx_min < NUM_SAMPLES else 0.0
 
-    # ------- fittable (C++ thresholds) -------
+    # ------- fittable -------
     fittable = True
     fittable &= (idx_min < int(NUM_SAMPLES * 0.8))
     fittable &= (abs(amp) > 5.0 * baseline_RMS)
@@ -517,17 +551,12 @@ def compute_features(
     else:
         fittable = False
 
-    # ------- auto polarity switch block (C++ behavior as currently written) -------
-    # In your C++ snippet, the "if(var[chName+'amp'] < 0)" condition is commented out,
-    # so whenever counter_auto_pol_switch>0 and fittable and algorithm not None, they flip.
-    # We apply the same *locally* (no global mutation).
+    # ------- auto polarity switch block -------
     if fittable and ("None" not in algo) and (c.counter_auto_pol_switch > 0):
         amp = -amp
-        scale_factor = -scale_factor
-        channel = -channel  # flips the waveform in-place effect
-        # baseline and baseline storage sign flips in C++; doesn't affect timing results here.
+        channel = -channel
 
-    # ------- LP2_50 (C++ local polynomial fit path for f=0.5, deg=2) -------
+    # ------- LP2_50 -------
     out["LP2_50"] = 0.0
     if fittable and ("None" not in algo) and ("LP2" in algo):
         f = 0.50
@@ -555,7 +584,6 @@ def compute_features(
         else:
             span_j = max(deg, span_j)
 
-        # C++ also checks bounds and may continue if too short
         if (j_close >= span_j) and (j_close + span_j < NUM_SAMPLES):
             N_add = 1
             if (span_j + N_add + j_close) < j_90_pre:
@@ -570,7 +598,7 @@ def compute_features(
     if not all_features:
         return out
 
-    # ------- gaussian fit (C++ "G" in algorithm) -------
+    # ------- gaussian fit -------
     out["gaus_mean"] = 0.0
     out["gaus_sigma"] = 0.0
     out["gaus_chi2"] = 0.0
@@ -587,11 +615,7 @@ def compute_features(
         out["gaus_sigma"] = float(sig)
         out["gaus_chi2"] = float(chi2)
 
-    # ------- linear rising edge (C++ "Re" in algorithm) -------
-    # C++ uses: i_min = cross(re_bounds[0]*amp, idx_min, -1)
-    #           i_max = cross(re_bounds[1]*amp, i_min, +1)
-    # then fits y = slope*x + b in [t_min, t_max] on pulse graph
-    # and solves t for constant fractions/thresholds.
+    # ------- linear rising edge -------
     if fittable and ("Re" in algo):
         rb0, rb1 = c.re_bounds
         i_min = get_idx_first_cross(rb0 * amp, channel, idx_min, -1)
@@ -600,7 +624,6 @@ def compute_features(
         if 0 <= i_min < i_max < NUM_SAMPLES and (i_max - i_min + 1) >= 2:
             x = time[i_min:i_max + 1].astype(float)
             y = channel[i_min:i_max + 1].astype(float)
-            # simple linear LS
             m, b = np.polyfit(x, y, 1)
             if m != 0.0 and np.isfinite(m) and np.isfinite(b):
                 for ffrac in cfg.constant_fraction:
@@ -640,9 +663,18 @@ def compute_features(
 _G = {}
 
 
-def _worker_init(cfg, time_arr, derived_suffixes, all_features,
-                 channel_branches, non_channel, read_branches,
-                 tree_name, copy_nonchannel, copy_waveforms):
+def _worker_init(
+    cfg,
+    time_arr,
+    derived_suffixes,
+    all_features,
+    channel_branches,
+    non_channel,
+    read_branches,
+    tree_name,
+    copy_nonchannel,
+    copy_waveforms,
+):
     _G["cfg"] = cfg
     _G["time"] = time_arr
     _G["derived_suffixes"] = derived_suffixes
@@ -658,7 +690,6 @@ def _worker_init(cfg, time_arr, derived_suffixes, all_features,
 def _process_entry_range(job):
     """
     job = (input_file, entry_start, entry_stop, tmpdir)
-
     Returns: (entry_start, entry_stop, tmppath, n_events)
     """
     input_file, entry_start, entry_stop, tmpdir = job
@@ -674,10 +705,7 @@ def _process_entry_range(job):
     copy_nonchannel = _G["copy_nonchannel"]
     copy_waveforms = _G["copy_waveforms"]
 
-    tmppath = os.path.join(
-        tmpdir,
-        f"tmp_{entry_start}_{entry_stop}_{uuid.uuid4().hex}.root"
-    )
+    tmppath = os.path.join(tmpdir, f"tmp_{entry_start}_{entry_stop}_{uuid.uuid4().hex}.root")
 
     with uproot.open(input_file) as f:
         tree = f[tree_name]
@@ -688,7 +716,9 @@ def _process_entry_range(job):
             library="ak",
         )
 
-    n_evt = len(arrays[read_branches[0]])
+    # determine n_evt robustly
+    first_key = read_branches[0]
+    n_evt = len(arrays[first_key])
     out_chunk = {}
 
     # Optionally copy non-channel
@@ -702,13 +732,13 @@ def _process_entry_range(job):
         for chname in channel_branches:
             out_chunk[chname] = ak.to_list(arrays[chname])
 
-    # Derived branches per channel
-    for i, chname in enumerate(channel_branches):
-        # allocate
+    # Derived branches per channel (CRITICAL: map to cfg index, not enumerate)
+    for chname in channel_branches:
+        cfg_idx = branch_to_cfg_index(chname)
+
         chunk_out = {suf: np.zeros(n_evt, dtype=np.float32) for suf in derived_suffixes}
 
-        # config skip => leave zeros
-        if not cfg.has_channel(i):
+        if not cfg.has_channel(cfg_idx):
             for suf in derived_suffixes:
                 out_chunk[ch_out(chname, suf)] = chunk_out[suf]
             continue
@@ -721,7 +751,6 @@ def _process_entry_range(job):
             wf_np = wf_np.filled(np.nan)
         wf_np = wf_np.astype(np.float32, copy=False)
 
-        # loop events
         for e in range(n_evt):
             wf = wf_np[e]
             if not np.isfinite(wf).any():
@@ -735,7 +764,7 @@ def _process_entry_range(job):
                 wf_raw_in=wf,
                 time=time_arr,
                 cfg=cfg,
-                ch_idx=i,
+                ch_idx=cfg_idx,
                 all_features=all_features,
             )
             for suf in derived_suffixes:
@@ -747,7 +776,6 @@ def _process_entry_range(job):
     # time branch (store once per event as in the C++ output tree)
     out_chunk["time"] = np.tile(time_arr, (n_evt, 1))
 
-    # write temp
     with uproot.recreate(tmppath) as fout:
         fout[tree_name] = out_chunk
 
@@ -764,7 +792,7 @@ def main():
     ap.add_argument("-i", "--input", required=True, help="Input ROOT file")
     ap.add_argument(
         "-o", "--output", required=True,
-        help="Output ROOT filename ONLY (no path). Use --outdir to control directory."
+        help="Output ROOT filename ONLY (no path). Use --outdir to control directory.",
     )
     ap.add_argument("--outdir", default=".", help="Output directory (default: .)")
     ap.add_argument("--tag", default="", help="Tag appended to output filename (before .root)")
@@ -791,7 +819,7 @@ def main():
                     help="Keep temp chunk ROOT files (debug)")
     args = ap.parse_args()
 
-    # ----- output path (filename only + tag) -----
+    # ----- output path -----
     outname = args.output
     base, ext = os.path.splitext(outname)
     if not ext:
@@ -849,7 +877,7 @@ def main():
 
     if args.verbose:
         print("=" * 90)
-        print(" TIMING NTUPLIZER (MULTIPROCESSING, C++-MATCHED)")
+        print(" TIMING NTUPLIZER (MULTIPROCESSING, C++-MATCHED) — UPDATED")
         print("=" * 90)
         print(f"Input     : {args.input}")
         print(f"Tree      : {args.tree}")
@@ -862,6 +890,14 @@ def main():
         print(f"Tmpdir    : {tmpdir}")
         if args.all_features and (not _HAVE_SCIPY):
             print("[INFO] scipy not found; gaussian fit uses moment-based fallback.")
+        # quick sanity: show first few branch->cfg indices
+        try:
+            demo = channel_branches[:8]
+            print("Branch->cfg idx demo:")
+            for b in demo:
+                print(f"  {b:35s} -> {branch_to_cfg_index(b)}")
+        except Exception as e:
+            print(f"[WARN] branch->cfg mapping demo failed: {e}")
         print("=" * 90)
 
     # ----- multiprocessing compute -----
