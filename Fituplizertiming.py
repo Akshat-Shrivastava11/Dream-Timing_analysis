@@ -721,16 +721,21 @@ def _process_entry_range(job):
     n_evt = len(arrays[first_key])
     out_chunk = {}
 
+    # Safe field list for awkward
+    arr_fields = set(arrays.fields)
+
     # Optionally copy non-channel
     if copy_nonchannel:
         for k in non_channel:
-            if k in arrays:
-                out_chunk[k] = np.asarray(arrays[k])
+            if k in arr_fields:
+                # keep as awkward if it isn't flat numeric
+                out_chunk[k] = arrays[k]
 
-    # Optionally copy waveforms (big)
+    # Optionally copy waveforms (big) — keep as awkward jagged
     if copy_waveforms:
         for chname in channel_branches:
-            out_chunk[chname] = ak.to_list(arrays[chname])
+            out_chunk[chname] = arrays[chname]
+
 
     # Derived branches per channel (CRITICAL: map to cfg index, not enumerate)
     for chname in channel_branches:
@@ -811,10 +816,20 @@ def main():
     ap.add_argument("--tmpdir", default="",
                     help="Temp directory (default: <outdir>/.tmp_ntuple)")
     ap.add_argument("--verbose", action="store_true")
+
+    # Legacy toggles (still supported)
     ap.add_argument("--copy_nonchannel", action="store_true",
                     help="Copy non-channel branches to output")
     ap.add_argument("--copy_waveforms", action="store_true",
                     help="Copy waveform vector branches to output (large)")
+
+    # NEW: keep originals by default
+    ap.add_argument("--keep_all_originals", action="store_true", default=True,
+                    help="Keep ALL original branches (waveforms + non-channel). Default: True")
+    ap.add_argument("--no_keep_all_originals", dest="keep_all_originals",
+                    action="store_false",
+                    help="Do not keep original branches; write only derived branches + time")
+
     ap.add_argument("--keep_tmp", action="store_true",
                     help="Keep temp chunk ROOT files (debug)")
     args = ap.parse_args()
@@ -851,8 +866,17 @@ def main():
 
     non_channel = [k for k in keys if (k not in channel_branches and k != "time")]
 
+    # ----- decide what originals to keep (DEFAULT: keep everything) -----
+    if args.keep_all_originals:
+        copy_waveforms = True
+        copy_nonchannel = True
+    else:
+        copy_waveforms = args.copy_waveforms
+        copy_nonchannel = args.copy_nonchannel
+
+    # ----- branches to read from input for this job -----
     read_branches = list(channel_branches)
-    if args.copy_nonchannel:
+    if copy_nonchannel:
         read_branches += non_channel
 
     # ----- derived suffixes -----
@@ -877,7 +901,7 @@ def main():
 
     if args.verbose:
         print("=" * 90)
-        print(" TIMING NTUPLIZER (MULTIPROCESSING, C++-MATCHED) — UPDATED")
+        print(" TIMING NTUPLIZER (MULTIPROCESSING, C++-MATCHED) — KEEP ORIGINALS DEFAULT")
         print("=" * 90)
         print(f"Input     : {args.input}")
         print(f"Tree      : {args.tree}")
@@ -885,12 +909,13 @@ def main():
         print(f"Channels  : {len(channel_branches)}")
         print(f"Chunk     : {args.chunk} -> {len(jobs)} chunks")
         print(f"nproc     : {nproc}")
+        print(f"Keep orig : {args.keep_all_originals}")
+        print(f"Suffix    : '{args.tag}'")
         print(f"Features  : {'all' if args.all_features else 'minimal'}")
         print(f"Outpath   : {outpath}")
         print(f"Tmpdir    : {tmpdir}")
         if args.all_features and (not _HAVE_SCIPY):
             print("[INFO] scipy not found; gaussian fit uses moment-based fallback.")
-        # quick sanity: show first few branch->cfg indices
         try:
             demo = channel_branches[:8]
             print("Branch->cfg idx demo:")
@@ -909,7 +934,7 @@ def main():
         initargs=(
             cfg, time_arr, derived_suffixes, args.all_features,
             channel_branches, non_channel, read_branches,
-            args.tree, args.copy_nonchannel, args.copy_waveforms
+            args.tree, copy_nonchannel, copy_waveforms
         ),
     ) as pool:
         for res in tqdm(pool.imap_unordered(_process_entry_range, jobs),
@@ -926,11 +951,14 @@ def main():
                 ttmp = tf[args.tree]
                 arr = ttmp.arrays(library="ak")
 
+            # IMPORTANT: write as dict-of-branches (works with jagged waveforms)
+            arr_dict = {k: arr[k] for k in arr.fields}
+
             if not tree_written:
-                fout[args.tree] = arr
+                fout[args.tree] = arr_dict
                 tree_written = True
             else:
-                fout[args.tree].extend(arr)
+                fout[args.tree].extend(arr_dict)
 
     # ----- cleanup -----
     if not args.keep_tmp:
@@ -948,6 +976,7 @@ def main():
     print(f"\nWrote: {outpath}")
     print(f"Tree : {args.tree}")
     print(f"--all_features: {args.all_features}")
+    print(f"--keep_all_originals: {args.keep_all_originals}")
     print(f"Chunks: {len(results)}  nproc: {nproc}")
 
 
