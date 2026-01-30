@@ -14,19 +14,17 @@ Everything else kept as-is, except small safety checks.
 
 Run example:
   python3 Fituplizertiming.py \
-    -i in.root -o out.root --outdir . \
-    --config /path/to/DRS_Service_TTU_2025_Sep.config \
-    --nproc 4 --chunk 500 --verbose
-
-    python3 Fituplizertiming.py \
-  -i /lustre/research/hep/yofeng/HG-DREAM/CERN/ROOT/run1468_250927145556_converted.root \
-  -o run1468_250927145556_converted_timingskim.root \
-  --outdir /lustre/research/hep/akshriva/Dream-Timing/PostTimingFitskims \
+  -i /lustre/research/hep/yofeng/HG-DREAM/CERN/ROOT/run1355_250924165834_converted.root \
+  -o run1355_250924165834_converted_timingskim.root \
+  --outdir /lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples \
   --config /lustre/research/hep/cmadrid/TimingDAQ/DRS_Service_TTU_2025_Sep.config \
   --tree EventTree \
   --nproc 4 \
   --chunk 500 \
-  --verbose
+  --tmpdir /lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/.tmp_test1355 \
+  --verbose \
+  --keep_all_originals
+
 
 """
 
@@ -686,7 +684,6 @@ def _worker_init(
     _G["copy_nonchannel"] = copy_nonchannel
     _G["copy_waveforms"] = copy_waveforms
 
-
 def _process_entry_range(job):
     """
     job = (input_file, entry_start, entry_stop, tmpdir)
@@ -736,7 +733,6 @@ def _process_entry_range(job):
         for chname in channel_branches:
             out_chunk[chname] = arrays[chname]
 
-
     # Derived branches per channel (CRITICAL: map to cfg index, not enumerate)
     for chname in channel_branches:
         cfg_idx = branch_to_cfg_index(chname)
@@ -778,6 +774,38 @@ def _process_entry_range(job):
         for suf in derived_suffixes:
             out_chunk[ch_out(chname, suf)] = chunk_out[suf]
 
+    # ------------------------------------------------------------
+    # tfinal (ALWAYS ON): hard-wired, uses *_LP2_50 branches
+    #
+    #   t_final(b,g,c) =
+    #       ( t(b,g,c) - t(b,g,8) )
+    #     - ( t(b,3,7) - t(b,3,8) )
+    #
+    # where t(...) is <channel>_LP2_50 already computed above.
+    # No PID, no correction factors, no guards.
+    # ------------------------------------------------------------
+    boards_present = sorted({int(BR_RE.match(ch).group(1)) for ch in channel_branches if BR_RE.match(ch)})
+
+    for b in boards_present:
+        mcp = f"DRS_Board{b}_Group3_Channel7"
+        trig3 = f"DRS_Board{b}_Group3_Channel8"
+
+        mcp_t = out_chunk[f"{mcp}_LP2_50"]
+        trig3_t = out_chunk[f"{trig3}_LP2_50"]
+
+        mcp_term = mcp_t - trig3_t  # (t_mcp7 - t_trig3), fixed for board
+
+        for g in range(4):
+            trig_g = f"DRS_Board{b}_Group{g}_Channel8"
+            trig_g_t = out_chunk[f"{trig_g}_LP2_50"]
+
+            for c in range(9):
+                ch = f"DRS_Board{b}_Group{g}_Channel{c}"
+                t_ch = out_chunk[f"{ch}_LP2_50"]
+
+                tf = (t_ch - trig_g_t) - mcp_term
+                out_chunk[f"tfinal_Board{b}_Group{g}_Channel{c}"] = tf.astype(np.float32, copy=False)
+
     # time branch (store once per event as in the C++ output tree)
     out_chunk["time"] = np.tile(time_arr, (n_evt, 1))
 
@@ -785,7 +813,6 @@ def _process_entry_range(job):
         fout[tree_name] = out_chunk
 
     return (entry_start, entry_stop, tmppath, n_evt)
-
 
 # ---------------------------
 # Main
