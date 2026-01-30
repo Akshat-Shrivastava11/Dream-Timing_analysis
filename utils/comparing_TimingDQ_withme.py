@@ -6,11 +6,13 @@ import matplotlib.pyplot as plt
 # -------------------------
 # INPUTS
 # -------------------------
-chris_file_path = "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1468_250927145556_TimingDAQ.root"
-my_file_path    = "/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitskims/run1468_250927145556_converted_timingskim.root"
+#chris_file_path = "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1468_250927145556_TimingDAQ.root"
+chris_file_path = "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1355_250924165834_TimingDAQ.root"
+#my_file_path    = "/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitskims/run1468_250927145556_converted_timingskim.root"
+my_file_path = '/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1355_250924165834_converted_timingskim.root'
 
 TREE = "EventTree"
-OUTDIR = "Chris_t50/LP2_50_compare_side_by_side"
+OUTDIR = "Chris_t50/run1355/LP2_50_compare_side_by_side"
 os.makedirs(OUTDIR, exist_ok=True)
 
 ALL_CHANNELS = [
