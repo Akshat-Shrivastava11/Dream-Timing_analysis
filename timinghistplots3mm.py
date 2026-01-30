@@ -51,11 +51,27 @@ def _prep(arr, xlim):
     return arr
 
 def _code(b, g, c):
-    # "bgc" with each as a single digit -> e.g. 0,0,0 => "000"
     return f"{b}{g}{c}"
 
 def _branch(b, g, c):
     return f"tfinal_Board{b}_Group{g}_Channel{c}"
+
+def _mode_from_hist(arr, bins):
+    # mode = center of the max bin
+    h, edges = np.histogram(arr, bins=bins)
+    if h.sum() == 0:
+        return np.nan, h
+    imax = int(np.argmax(h))
+    mode = 0.5 * (edges[imax] + edges[imax + 1])
+    return float(mode), h
+
+
+# ---------------- Styling helpers ----------------
+def _global_ylabel(fig, text="Events"):
+    fig.text(0.012, 0.5, text, va="center", rotation=90)
+
+def _tight_layout(fig, left=0.06, right=0.995, top=0.995, bottom=0.045, hspace=0.18, wspace=0.08):
+    fig.subplots_adjust(left=left, right=right, top=top, bottom=bottom, hspace=hspace, wspace=wspace)
 
 
 # ---------------- 2×2 BOARDS (overlay channels per board) ----------------
@@ -68,10 +84,13 @@ def make_boards(parity, label, xlim):
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        fig, axes = plt.subplots(2, 2, figsize=(8, 14), sharex=True)
+        fig, axes = plt.subplots(2, 2, figsize=(8, 14), sharex=True, sharey=True)
         axes = axes.flatten()
 
-        for ax, b in zip(axes, BOARDS):
+        # First pass: compute max bin height across the whole figure
+        global_ymax = 1
+        cached = {b: [] for b in BOARDS}  # list of tuples (b,g,c, h)
+        for b in BOARDS:
             for g in range(NG):
                 for c in range(NC):
                     if not _ok(g, c, parity):
@@ -79,23 +98,41 @@ def make_boards(parity, label, xlim):
                     k = _branch(b, g, c)
                     if k not in keys:
                         continue
-
                     arr = _prep(tree[k].array(library="np"), xlim)
                     if arr is None:
                         continue
+                    mode, h = _mode_from_hist(arr, bins=bins)
+                    cached[b].append((g, c, arr, mode, h))
+                    if h.max() > global_ymax:
+                        global_ymax = int(h.max())
 
-                    h, _ = np.histogram(arr, bins=bins)
-                    ax.step(centers, h, where="mid", label=_code(b, g, c))
+        # Second pass: draw
+        for ax, b in zip(axes, BOARDS):
+            for (g, c, arr, mode, h) in cached[b]:
+                mu = float(arr.mean())
+                sig = float(arr.std())
+                # filled, red histogram (use precomputed h for consistent y max)
+                ax.fill_between(
+                    centers, h, step="mid", alpha=0.30
+                )
+                ax.step(
+                    centers, h, where="mid", linewidth=1.0,
+                    label=f"{_code(b,g,c)}  μ={mu:.2f}  m={mode:.2f}  σ={sig:.2f}"
+                )
 
             ax.set_xlim(*xlim)
-            ax.set_ylabel("Events")
-            ax.legend(fontsize=6, ncol=4, frameon=False, title=None)
+            ax.set_ylim(0, global_ymax * 1.05)
+
+            # no per-axes ylabel; legend carries identification
+            ax.legend(fontsize=6, ncol=1, frameon=False, title=None, loc="upper right")
+            ax.tick_params(labelsize=9)
 
         for ax in axes:
             ax.set_xlabel(_xlabel())
 
-        # pack tighter
-        fig.subplots_adjust(left=0.08, right=0.98, top=0.98, bottom=0.06, hspace=0.15, wspace=0.12)
+        _global_ylabel(fig, "Events")
+        _tight_layout(fig, left=0.07, right=0.995, top=0.995, bottom=0.05, hspace=0.12, wspace=0.08)
+
         pdf.savefig(fig)
         plt.close(fig)
 
@@ -118,36 +155,56 @@ def make_16(parity, label, xlim):
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        fig, axes = plt.subplots(8, 2, figsize=(9, 28), sharex=True)
+        fig, axes = plt.subplots(8, 2, figsize=(9, 28), sharex=True, sharey=True)
 
+        # precompute histograms for all panels → global y max
+        global_ymax = 1
+        cache = {}  # (b,g) -> list of (ch, arr, mode, h)
         for r, (bL, gL, bR, gR) in enumerate(layout):
-            for cidx, (b, g) in enumerate([(bL, gL), (bR, gR)]):
-                ax = axes[r, cidx]
-
+            for (b, g) in [(bL, gL), (bR, gR)]:
+                if (b, g) in cache:
+                    continue
+                cache[(b, g)] = []
                 for ch in range(NC):
                     if not _ok(g, ch, parity):
                         continue
                     k = _branch(b, g, ch)
                     if k not in keys:
                         continue
-
                     arr = _prep(tree[k].array(library="np"), xlim)
                     if arr is None:
                         continue
+                    mode, h = _mode_from_hist(arr, bins=bins)
+                    cache[(b, g)].append((ch, arr, mode, h))
+                    if h.max() > global_ymax:
+                        global_ymax = int(h.max())
 
-                    h, _ = np.histogram(arr, bins=bins)
-                    ax.step(centers, h, where="mid", label=_code(b, g, ch))
+        # draw
+        for r, (bL, gL, bR, gR) in enumerate(layout):
+            for cidx, (b, g) in enumerate([(bL, gL), (bR, gR)]):
+                ax = axes[r, cidx]
+
+                for (ch, arr, mode, h) in cache.get((b, g), []):
+                    mu = float(arr.mean())
+                    sig = float(arr.std())
+
+                    ax.fill_between(centers, h, step="mid", alpha=0.30)
+                    ax.step(
+                        centers, h, where="mid", linewidth=1.0,
+                        label=f"{_code(b,g,ch)}  μ={mu:.2f}  m={mode:.2f}  σ={sig:.2f}"
+                    )
 
                 ax.set_xlim(*xlim)
-                ax.set_ylabel("Events")
-                ax.legend(fontsize=6, ncol=4, frameon=False, title=None)
+                ax.set_ylim(0, global_ymax * 1.05)
+                ax.legend(fontsize=6, ncol=1, frameon=False, loc="upper right")
+                ax.tick_params(labelsize=8)
 
         for ax in axes[-1]:
             ax.set_xlabel(_xlabel())
 
-        # remove titles entirely (you asked)
-        # pack tighter
-        fig.subplots_adjust(left=0.06, right=0.99, top=0.995, bottom=0.03, hspace=0.22, wspace=0.10)
+        _global_ylabel(fig, "Events")
+        _tight_layout(fig, left=0.06, right=0.995, top=0.997, bottom=0.03, hspace=0.16, wspace=0.06)
+
         pdf.savefig(fig)
         plt.close(fig)
 
@@ -155,8 +212,6 @@ def make_16(parity, label, xlim):
 
 
 # ---------------- QUARTZ / PLASTIC MOSAICS ----------------
-# Define the exact "pattern" you gave as a rectangular grid of codes (or None for blanks).
-# Codes are "bgc" (b=board, g=group, c=channel).
 QUARTZ_GRID = [
     [None,  "002", None,  None],
     ["006", "004", "206", "204"],
@@ -181,8 +236,27 @@ PLASTIC_GRID = [
     ["132", "130", "332", "330"],
 ]
 
+# Combined CER grid you provided (normalized + obvious typo fixes)
+CER_ALL_GRID = [
+    ["002", "000", "202", "200"],
+    ["006", "004", "206", "204"],
+    ["012", "010", "212", "210"],
+    ["016", "014", "216", "214"],
+    ["022", "020", "222", "220"],
+    ["026", "024", "226", "224"],
+    ["032", "030", "232", "230"],
+    [None,  "034", None,  "234"],
+    ["102", "100", "302", "300"],
+    ["106", "104", "306", "304"],  # fixed "1061004"
+    ["112", "110", "312", "310"],
+    ["116", "114", "316", "314"],
+    ["122", "120", "322", "320"],
+    ["126", "124", "326", "324"],
+    ["132", "130", "332", "330"],
+    [None,  "134", None,  "334"],
+]
+
 def _parse_code(code_str):
-    # code_str like "214" -> b=2,g=1,c=4
     b = int(code_str[0])
     g = int(code_str[1])
     c = int(code_str[2])
@@ -200,7 +274,41 @@ def make_mosaic_hist(grid, label, xlim):
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        fig, axes = plt.subplots(nrows, ncols, figsize=(10, 2.3 * nrows), sharex=True)
+        # precompute all hists + stats to set global y max
+        global_ymax = 1
+        cell = {}  # (r,c) -> dict or None
+        for r in range(nrows):
+            row = grid[r]
+            for c in range(ncols):
+                if c >= len(row) or row[c] is None:
+                    cell[(r, c)] = None
+                    continue
+                code = row[c]
+                b, g, ch = _parse_code(code)
+
+                if not _base_ok(g, ch):
+                    cell[(r, c)] = {"code": code, "status": "veto"}
+                    continue
+
+                k = _branch(b, g, ch)
+                if k not in keys:
+                    cell[(r, c)] = {"code": code, "status": "missing"}
+                    continue
+
+                arr = _prep(tree[k].array(library="np"), xlim)
+                if arr is None:
+                    cell[(r, c)] = {"code": code, "status": "nostats"}
+                    continue
+
+                mode, h = _mode_from_hist(arr, bins=bins)
+                mu = float(arr.mean())
+                sig = float(arr.std())
+                cell[(r, c)] = {"code": code, "status": "ok", "h": h, "mu": mu, "mode": mode, "sig": sig}
+
+                if h.max() > global_ymax:
+                    global_ymax = int(h.max())
+
+        fig, axes = plt.subplots(nrows, ncols, figsize=(10, 2.05 * nrows), sharex=True, sharey=True)
         if nrows == 1 and ncols == 1:
             axes = np.array([[axes]])
         elif nrows == 1:
@@ -209,63 +317,61 @@ def make_mosaic_hist(grid, label, xlim):
             axes = np.array([[ax] for ax in axes])
 
         for r in range(nrows):
-            row = grid[r]
             for c in range(ncols):
                 ax = axes[r, c]
-                ax.set_axis_on()
                 ax.set_xlim(*xlim)
-                ax.set_ylabel("")
-
-                if c >= len(row) or row[c] is None:
-                    ax.axis("off")
-                    continue
-
-                code = row[c]
-                b, g, ch = _parse_code(code)
-
-                # enforce your existing base vetoes too
-                if not _base_ok(g, ch):
-                    ax.axis("off")
-                    continue
-
-                k = _branch(b, g, ch)
-                if k not in keys:
-                    ax.text(0.5, 0.5, f"{code}\n(missing)", ha="center", va="center", transform=ax.transAxes, fontsize=9)
-                    continue
-
-                arr = _prep(tree[k].array(library="np"), xlim)
-                if arr is None:
-                    ax.text(0.5, 0.5, f"{code}\n(no stats)", ha="center", va="center", transform=ax.transAxes, fontsize=9)
-                    continue
-
-                h, _ = np.histogram(arr, bins=bins)
-                ax.step(centers, h, where="mid", label=code)
-
-                # No titles; use legend as the "label"
-                ax.legend(fontsize=8, frameon=False, loc="upper right", handlelength=1.0, borderaxespad=0.2)
-
-                # cleaner ticks
+                ax.set_ylim(0, global_ymax * 1.05)
                 ax.tick_params(labelsize=8)
 
-        # xlabels only on bottom row, for visible axes
+                entry = cell.get((r, c))
+                if entry is None:
+                    ax.axis("off")
+                    continue
+
+                code = entry["code"]
+                status = entry["status"]
+                if status != "ok":
+                    ax.text(0.5, 0.5, f"{code}\n({status})", ha="center", va="center",
+                            transform=ax.transAxes, fontsize=9)
+                    continue
+
+                h = entry["h"]
+                ax.fill_between(centers, h, step="mid", alpha=0.30)
+                ax.step(
+                    centers, h, where="mid", linewidth=1.0,
+                    label=f"{code}  μ={entry['mu']:.2f}  m={entry['mode']:.2f}  σ={entry['sig']:.2f}"
+                )
+                ax.legend(fontsize=7, frameon=False, loc="upper right", handlelength=1.0, borderaxespad=0.2)
+
+        # xlabels only on bottom row
         for ax in axes[-1, :]:
-            if ax.has_data():
+            if ax.get_visible() and ax.axison:
                 ax.set_xlabel(_xlabel())
 
-        # tight packing
-        fig.subplots_adjust(left=0.05, right=0.995, top=0.995, bottom=0.04, hspace=0.18, wspace=0.08)
+        _global_ylabel(fig, "Events")
+        _tight_layout(fig, left=0.05, right=0.995, top=0.995, bottom=0.035, hspace=0.14, wspace=0.05)
+
         pdf.savefig(fig)
         plt.close(fig)
 
     print("Saved:", out)
 
-def make_mosaic_heatmap(grid, label, xlim):
-    out = f"{OUTDIR}/HEATMAP_{label}_mean.pdf"
+def make_mosaic_heatmaps(grid, label, xlim):
+    """
+    Produces a 2-page PDF:
+      page 1: mean(|tfinal|)
+      page 2: mode(|tfinal|) from histogram max bin
+    Uses inferno colormap.
+    """
+    out = f"{OUTDIR}/HEATMAP_{label}_mean_mode.pdf"
 
     nrows = len(grid)
     ncols = max(len(r) for r in grid)
 
     means = np.full((nrows, ncols), np.nan, dtype=float)
+    modes = np.full((nrows, ncols), np.nan, dtype=float)
+
+    bins = np.linspace(xlim[0], xlim[1], NBINS + 1)
 
     with uproot.open(ANA_FILE) as f:
         tree = f[TREE_NAME]
@@ -291,57 +397,63 @@ def make_mosaic_heatmap(grid, label, xlim):
                     continue
 
                 means[r, c] = float(arr.mean())
+                mode, _ = _mode_from_hist(arr, bins=bins)
+                modes[r, c] = float(mode)
 
     with PdfPages(out) as pdf:
-        fig, ax = plt.subplots(1, 1, figsize=(8, 1.0 + 0.6 * nrows))
-        im = ax.imshow(means, origin="upper", aspect="equal")
+        for mat, title, cbar_label in [
+            (means, f"{label} mean(|tfinal|)", "Mean(|tfinal|) [ns]"),
+            (modes, f"{label} mode(|tfinal|)", "Mode(|tfinal|) [ns]"),
+        ]:
+            fig, ax = plt.subplots(1, 1, figsize=(8.4, 1.0 + 0.55 * nrows))
+            im = ax.imshow(mat, origin="upper", aspect="equal", cmap="viridis")
 
-        # annotate codes (and means if present)
-        for r in range(nrows):
-            row = grid[r]
-            for c in range(ncols):
-                if c >= len(row) or row[c] is None:
-                    continue
-                code = row[c]
-                if np.isfinite(means[r, c]):
-                    txt = f"{code}\n{means[r,c]:.2f}"
-                else:
-                    txt = f"{code}\n—"
-                ax.text(c, r, txt, ha="center", va="center", fontsize=8)
+            # annotate codes + value
+            for rr in range(nrows):
+                row = grid[rr]
+                for cc in range(ncols):
+                    if cc >= len(row) or row[cc] is None:
+                        continue
+                    code = row[cc]
+                    val = mat[rr, cc]
+                    txt = f"{code}\n{val:.2f}" if np.isfinite(val) else f"{code}\n—"
+                    ax.text(cc, rr, txt, ha="center", va="center", fontsize=8)
 
-        ax.set_xticks(range(ncols))
-        ax.set_yticks(range(nrows))
-        ax.set_xticklabels([""] * ncols)
-        ax.set_yticklabels([""] * nrows)
-        ax.tick_params(length=0)
+            ax.set_xticks(range(ncols))
+            ax.set_yticks(range(nrows))
+            ax.set_xticklabels([""] * ncols)
+            ax.set_yticklabels([""] * nrows)
+            ax.tick_params(length=0)
 
-        cbar = fig.colorbar(im, ax=ax)
-        cbar.set_label("Mean(|tfinal|) [ns]")
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.set_label(cbar_label)
 
-        ax.set_title(f"{label} mean(|tfinal|) map")
-        fig.subplots_adjust(left=0.04, right=0.92, top=0.94, bottom=0.04)
-        pdf.savefig(fig)
-        plt.close(fig)
+            ax.set_title(title)
+            fig.subplots_adjust(left=0.04, right=0.92, top=0.93, bottom=0.04)
+            pdf.savefig(fig)
+            plt.close(fig)
 
     print("Saved:", out)
 
 
 # ---------------- MAIN ----------------
 def main():
-    # Your original SCI/CER sets
+    # SCI/CER standard
     make_boards("odd",  "SCI", (7.0, 14.0))
     make_16(   "odd",  "SCI", (7.0, 14.0))
 
     make_boards("even", "CER", (7.0, 14.0))
     make_16(   "even", "CER", (7.0, 14.0))
 
-    # New: CER-Quartz
+    # Quartz + Plastic mosaics + heatmaps (mean+mode)
     make_mosaic_hist(QUARTZ_GRID, "CER-Quartz", (7.0, 14.0))
-    make_mosaic_heatmap(QUARTZ_GRID, "CER-Quartz", (7.0, 14.0))
+    make_mosaic_heatmaps(QUARTZ_GRID, "CER-Quartz", (8.0, 14.0))
 
-    # New: CER-Plastic
     make_mosaic_hist(PLASTIC_GRID, "CER-Plastic", (7.0, 14.0))
-    make_mosaic_heatmap(PLASTIC_GRID, "CER-Plastic", (7.0, 14.0))
+    make_mosaic_heatmaps(PLASTIC_GRID, "CER-Plastic", (7.0, 14.0))
+
+    # Combined CER heatmaps (mean+mode) using your mapping
+    make_mosaic_heatmaps(CER_ALL_GRID, "CER-AllChannels", (7.0, 14.0))
 
     print("All done.")
 
