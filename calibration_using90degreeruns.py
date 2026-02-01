@@ -1,874 +1,703 @@
 #!/usr/bin/env python3
 import os
+import re
+import argparse
 import numpy as np
 import uproot
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
-from tqdm import tqdm
-from multiprocessing import Pool, cpu_count
-from scipy.optimize import curve_fit
 
-# ================= USER SETTINGS =================
-ANA_FILE = "TRUE-HGtiming/skimmed_files/run1513_250928194230_TimingDAQ_postaskim_allchannels_newmethod.root"
+# ================= DEFAULTS (overridden by argparse) =================
+ANA_FILE  = "TRUE-HGtiming/skimmed_files/run1513_250928194230_TimingDAQ_postaskim_allchannels_newmethod.root"
 TREE_NAME = "EventTree"
 
-OUTDIR = "./TRUE-HGtiming/SkimmedResults/90degreeRuns_tfinal_analysis"
-os.makedirs(OUTDIR, exist_ok=True)
+NBINS = 200
+CUT_MIN = 1.0
+MIN_ENTRIES = 200
+MIN_RAW = 500
 
-BOARDS = range(4)
+BOARDS = [0, 1, 2, 3]
 NG = 4
 NC = 9
 
-NBINS = 300
-XLIM_TFINAL = (5.0, 20.0)   # plot/fit range for |tfinal|
-CUT_MIN = 1.0               # ignore |tfinal| < CUT_MIN
-MIN_ENTRIES = 200           # after cuts on |tfinal|
-MIN_RAW = 500               # raw entries before abs/cut
-# =================================================
+# Heatmap colormap: flipped so yellow=low, blue/purple=high
+HEATMAP_CMAP = "viridis_r"
 
-# ================= FIT MODEL =================
-SQRT2PI = np.sqrt(2.0 * np.pi)
+# Tight packing defaults
+HSPACE = 0.10
+WSPACE = 0.05
 
-def folded_gaussian_counts(x, N, mu, sigma, B, binw):
-    """
-    Expected COUNTS PER BIN at positions x for a folded Gaussian on |t|.
-    N = total signal yield (approximately counts above baseline)
-    B = baseline counts/bin
-    binw = histogram bin width (ns)
-    """
-    g1 = np.exp(-0.5 * ((x - mu) / sigma) ** 2) / (SQRT2PI * sigma)
-    g2 = np.exp(-0.5 * ((x + mu) / sigma) ** 2) / (SQRT2PI * sigma)
-    pdf = g1 + g2
-    return N * binw * pdf + B
+# ================= MOSAIC GRIDS =================
+QUARTZ_GRID = [
+    [None,  "002", None,  None],
+    ["006", "004", "206", "204"],
+    ["016", "014", "216", "214"],
+    ["026", "024", "226", "224"],
+    [None,  "030", None,  None],
+    [None,  "034", None,  None],
+    ["106", "104", "306", "304"],
+    ["116", "114", "316", "314"],
+    ["126", "124", "326", "324"],
+    [None,  "134", None,  "334"],
+]
 
-def _fit_channel(bin_centers, hist, arr_abs, bin_edges):
-    """
-    Fit yield-normalized folded Gaussian in counts/bin:
-      y = N*binw*pdf_folded(x; mu,sigma) + B
-    Returns popt=(N,mu,sigma,B) or None.
-    """
-    if np.sum(hist) < MIN_ENTRIES:
-        return None
+PLASTIC_GRID = [
+    [None,  "000", "202", "200"],
+    ["012", "010", "212", "210"],
+    ["022", "020", "222", "220"],
+    ["032", None,  "232", "230"],
+    ["102", "100", "302", "300"],
+    ["112", "110", "312", "310"],
+    ["122", "120", "322", "320"],
+    ["132", "130", "332", "330"],
+]
 
-    nonzero = hist > 0
-    if nonzero.sum() < 10:
-        return None
+# Combined CER grid you provided
+CER_ALL_GRID = [
+    ["002", "000", "202", "200"],
+    ["006", "004", "206", "204"],
+    ["012", "010", "212", "210"],
+    ["016", "014", "216", "214"],
+    ["022", "020", "222", "220"],
+    ["026", "024", "226", "224"],
+    ["032", "030", "232", "230"],
+    [None,  "034", None,  "234"],
+    ["102", "100", "302", "300"],
+    ["106", "104", "306", "304"],
+    ["112", "110", "312", "310"],
+    ["116", "114", "316", "314"],
+    ["122", "120", "322", "320"],
+    ["126", "124", "326", "324"],
+    ["132", "130", "332", "330"],
+    [None,  "134", None,  "334"],
+]
 
-    peak_idx = int(np.argmax(hist))
-    peak_x = float(bin_centers[peak_idx])
+# SCI channels grid you provided (normalized + obvious typo fixes: 001->101 etc in lower block)
+SCI_ALL_GRID = [
+    ["003", "001", "203", "201"],
+    ["007", "005", "207", "205"],
+    ["013", "011", "213", "211"],
+    ["017", "015", "217", "215"],
+    ["023", "021", "223", "221"],
+    ["027", "025", "227", "225"],
+    ["033", "031", "233", "231"],
+    [None,  "035", None,  "235"],
 
-    core = arr_abs[(arr_abs > peak_x - 2.0) & (arr_abs < peak_x + 2.0)]
-    if core.size < 50:
-        core = arr_abs
+    ["103", "101", "303", "301"],
+    ["107", "105", "307", "305"],
+    ["113", "111", "313", "311"],
+    ["117", "115", "317", "315"],
+    ["123", "121", "323", "321"],
+    ["127", "125", "327", "325"],
+    ["133", "131", "333", "331"],
+    [None,  "135", None,  "335"],
+]
 
-    med = np.median(core)
-    mad = np.median(np.abs(core - med))
-    sigma0 = 1.4826 * mad if mad > 0 else np.std(core)
-    sigma0 = max(float(sigma0), 0.20)
+# ================= CER alignment controls =================
+# IMPORTANT: We align MEAN(|tfinal|) EXACTLY by shifting IN ABS SPACE:
+#   |tfinal|_shifted = |tfinal| + delta
+# This guarantees all *good* channels share the same mean(|tfinal|).
+#
+# Target is "least mean among GOOD channels" for Quartz and Plastic separately.
+DO_ALIGN_CER = True
 
-    W = 3.0
-    lo = max(XLIM_TFINAL[0], peak_x - W * sigma0)
-    hi = min(XLIM_TFINAL[1], peak_x + W * sigma0)
+# Quality cuts: only channels with a "clear" histogram are used to compute target + get shifts.
+QC_MIN_GOOD_N = 10     # entries after windowing/cuts
+QC_MIN_PEAK = 8        # max bin count must exceed this
+QC_MIN_PROM = 8.0       # peak / median(hist)
+QC_MAX_SIGMA = 1.82      # ns; set to None to disable
 
-    fit_mask = (bin_centers >= lo) & (bin_centers <= hi)
-    if np.sum(hist[fit_mask]) < MIN_ENTRIES * 0.6 or fit_mask.sum() < 8:
-        return None
+# Global ABS shift map for CER channels: (b,g,c) -> delta added to |tfinal|
+CER_ABS_SHIFTS = {}
+CER_TARGETS = {}        # "Quartz"/"Plastic" -> target mean used
+CER_QC_STATS = {}       # diagnostics
 
-    x = bin_centers[fit_mask]
-    y = hist[fit_mask]
 
-    binw = float(bin_edges[1] - bin_edges[0])
+# ================= HELPERS =================
+def _infer_run_label(path: str) -> str:
+    base = os.path.basename(path)
 
-    side_n = 10
-    side_vals = np.r_[hist[:side_n], hist[-side_n:]]
-    B0 = float(np.median(side_vals))
+    # run#### part
+    m_run = re.search(r"run(\d+)", base)
+    run_part = f"run{m_run.group(1)}" if m_run else "runUnknown"
 
-    N0 = float(max(np.sum(y - B0), 1.0))
-    yerr = np.sqrt(np.maximum(y, 1.0))
+    # timestamp-ish part (11–12 digits after an underscore)
+    # examples:
+    #   run1513_250928194230_converted_timingskim.root
+    #   run1513_250928194230_TimingDAQ_postaskim.root
+    m_ts = re.search(r"_(\d{11,12})(?:_|\.|$)", base)
+    ts_part = m_ts.group(1) if m_ts else None
 
-    def model(xx, N, mu, sigma, B):
-        return folded_gaussian_counts(xx, N, mu, sigma, B, binw)
+    if ts_part:
+        return f"90degcalibration_{run_part}_{ts_part}"
+    return f"90degcalibration_{run_part}"
 
-    p0 = [N0, peak_x, sigma0, B0]
 
-    bounds_lo = [0.0, 0.0, 0.05, 0.0]
-    bounds_hi = [np.inf, 30.0, 3.0, np.inf]
+def _default_outdir_for(ana_file: str) -> str:
+    return os.path.join("./TRUE-HGtiming/3mmplots_histonly", _infer_run_label(ana_file))
 
-    try:
-        popt, _ = curve_fit(
-            model, x, y,
-            p0=p0,
-            sigma=yerr,
-            absolute_sigma=True,
-            bounds=(bounds_lo, bounds_hi),
-            maxfev=60000
-        )
-        N, mu, sigma, B = popt
-        return (float(N), float(mu), float(sigma), float(B))
-    except Exception:
-        return None
+def _global_ylabel(fig, text="Events"):
+    fig.text(0.010, 0.5, text, va="center", rotation=90)
 
-# ================= CHANNEL SELECTION =================
-def _channel_ok(g, c):
-    # Skip trigger
+def _xlabel():
+    return r"$|t_{\mathrm{final}}|$ [ns]"
+
+def _branch(b, g, c):
+    return f"tfinal_Board{b}_Group{g}_Channel{c}"
+
+def _code(b, g, c):
+    return f"{b}{g}{c}"
+
+def _parse_code(code_str):
+    b = int(code_str[0])
+    g = int(code_str[1])
+    c = int(code_str[2])
+    return b, g, c
+
+def _base_ok(g, c):
     if c == 8:
         return False
-    # Skip MCP channels
     if g == 3 and c in (6, 7):
         return False
     return True
 
-def _xlabel():
-    return (
-        r"$|(t_{\mathrm{fit}}^{ch}-t_{\mathrm{trig}}^{g})"
-        r"-(t_{\mathrm{fit}}^{\mathrm{MCP7}}-t_{\mathrm{trig}}^{3})|$ [ns]"
-    )
+def _ok(g, c, parity):
+    if not _base_ok(g, c):
+        return False
+    return (c % 2 == 1) if parity == "odd" else (c % 2 == 0)
 
-# ================= IO HELPERS =================
-def _binning():
-    bin_edges = np.linspace(XLIM_TFINAL[0], XLIM_TFINAL[1], NBINS + 1)
-    bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
-    return bin_edges, bin_centers
+def _tighten(fig, left=0.055, right=0.995, top=0.995, bottom=0.04, hspace=None, wspace=None):
+    if hspace is None:
+        hspace = HSPACE
+    if wspace is None:
+        wspace = WSPACE
+    fig.subplots_adjust(left=left, right=right, top=top, bottom=bottom, hspace=hspace, wspace=wspace)
 
-def _prep_arr(arr):
-    """abs + CUT_MIN + MIN_ENTRIES check; returns cleaned arr_abs or None."""
-    if arr is None or arr.size < MIN_RAW:
+def _mode_and_hist(arr_abs, bins):
+    h, edges = np.histogram(arr_abs, bins=bins)
+    if h.sum() == 0:
+        return np.nan, h
+    imax = int(np.argmax(h))
+    mode = 0.5 * (edges[imax] + edges[imax + 1])
+    return float(mode), h
+
+def _legend_label(code, mu, mode, sig):
+    return f"{code}  μ={mu:.2f}  m={mode:.2f}  σ={sig:.2f}"
+
+def _prep_abs(arr_abs, xlim):
+    """
+    Prepare ABS values for plotting/heatmaps.
+    NOTE: This is applied BEFORE ABS-shifting; after shifting we do NOT re-cut.
+    """
+    if arr_abs.size < MIN_RAW:
         return None
-    arr_abs = np.abs(arr)
+    arr_abs = arr_abs[np.isfinite(arr_abs)]
     arr_abs = arr_abs[arr_abs >= CUT_MIN]
     if arr_abs.size < MIN_ENTRIES:
         return None
+    arr_abs = arr_abs[(arr_abs >= xlim[0]) & (arr_abs <= xlim[1])]
+    if arr_abs.size < 50:
+        return None
     return arr_abs
 
-def _load_board_data(tree, keys, b):
+def _hist_quality(arr_abs, bins):
+    h, _ = np.histogram(arr_abs, bins=bins)
+    peak = float(h.max()) if h.size else 0.0
+    baseline = float(np.median(h)) if h.size else 0.0
+    prom = peak / max(1.0, baseline)
+    mu = float(np.mean(arr_abs)) if arr_abs.size else np.nan
+    sig = float(np.std(arr_abs)) if arr_abs.size else np.nan
+
+    ok = True
+    if arr_abs.size < QC_MIN_GOOD_N:
+        ok = False
+    if peak < QC_MIN_PEAK:
+        ok = False
+    if prom < QC_MIN_PROM:
+        ok = False
+    if QC_MAX_SIGMA is not None and np.isfinite(sig) and sig > QC_MAX_SIGMA:
+        ok = False
+
+    return ok, {"N": int(arr_abs.size), "peak": peak, "baseline": baseline, "prom": prom, "mu": mu, "sig": sig}
+
+def _build_abs_shift_map(tree, keys, grid, xlim):
     """
-    Load all available arrays for a board into dict:
-      data[(g,c)] = np.array
+    Build ABS-space shifts for one material grid:
+      - Prepare |tfinal| and apply QC on that
+      - target_mean = MIN(mean_i) over GOOD channels (your request)
+      - abs_shift = target_mean - mean_i
+    This guarantees mean(|tfinal| + abs_shift) == target_mean.
     """
-    data = {}
+    bins = np.linspace(xlim[0], xlim[1], NBINS + 1)
+
+    means = []
+    stats = {}
+    good_chans = []
+
+    for row in grid:
+        for code in row:
+            if code is None:
+                continue
+            b, g, ch = _parse_code(code)
+            if not _base_ok(g, ch):
+                continue
+            k = _branch(b, g, ch)
+            if k not in keys:
+                continue
+
+            raw = tree[k].array(library="np")
+            arr_abs = np.abs(raw)
+            arr_abs = _prep_abs(arr_abs, xlim)
+            if arr_abs is None:
+                continue
+
+            ok, st = _hist_quality(arr_abs, bins=bins)
+            stats[(b, g, ch)] = {**st, "ok": ok}
+
+            if ok and np.isfinite(st["mu"]):
+                means.append(st["mu"])
+                good_chans.append((b, g, ch))
+
+    if len(means) == 0:
+        return {}, np.nan, stats
+
+    target_mean = float(np.min(means))  # least mean among GOOD channels
+
+    shifts_abs = {}
+    for (b, g, ch) in good_chans:
+        mu = stats[(b, g, ch)]["mu"]
+        shifts_abs[(b, g, ch)] = target_mean - mu
+
+    return shifts_abs, target_mean, stats
+
+def _apply_abs_shift(arr_abs, b, g, c, do_shift):
+    if not do_shift:
+        return arr_abs
+    return arr_abs + float(CER_ABS_SHIFTS.get((b, g, c), 0.0))
+
+
+# ================= PLOTS =================
+def make_boards(parity, label, xlim, outdir):
+    out = f"{outdir}/HISTONLY_{label}_Boards_vertical.pdf"
+    bins = np.linspace(xlim[0], xlim[1], NBINS + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
+
+    do_shift = (label.startswith("CER") and DO_ALIGN_CER)
+
+    with uproot.open(ANA_FILE) as f, PdfPages(out) as pdf:
+        tree = f[TREE_NAME]
+        keys = set(tree.keys())
+
+        fig, axes = plt.subplots(2, 2, figsize=(8, 14), sharex=True, sharey=True)
+        axes = axes.flatten()
+
+        global_ymax = 1
+        cache = {b: [] for b in BOARDS}  # list of (g,c, mu, mode, sig, h)
+        for b in BOARDS:
+            for g in range(NG):
+                for c in range(NC):
+                    if not _ok(g, c, parity):
+                        continue
+                    k = _branch(b, g, c)
+                    if k not in keys:
+                        continue
+
+                    raw = tree[k].array(library="np")
+                    arr_abs = np.abs(raw)
+                    arr_abs = _prep_abs(arr_abs, xlim)
+                    if arr_abs is None:
+                        continue
+
+                    # apply ABS-space alignment (no re-cut afterwards)
+                    arr_abs = _apply_abs_shift(arr_abs, b, g, c, do_shift)
+
+                    mu = float(arr_abs.mean())
+                    sig = float(arr_abs.std())
+                    mode, h = _mode_and_hist(arr_abs, bins=bins)
+
+                    cache[b].append((g, c, mu, mode, sig, h))
+                    global_ymax = max(global_ymax, int(h.max()))
+
+        for ax, b in zip(axes, BOARDS):
+            for (g, c, mu, mode, sig, h) in cache[b]:
+                code = _code(b, g, c)
+                ax.fill_between(centers, h, step="mid", color="red", alpha=0.25)
+                ax.step(centers, h, where="mid", color="red", linewidth=1.0,
+                        label=_legend_label(code, mu, mode, sig))
+
+            ax.set_xlim(*xlim)
+            ax.set_ylim(0, global_ymax * 1.05)
+            ax.legend(fontsize=6, ncol=1, frameon=False, loc="upper right")
+
+        for ax in axes:
+            ax.set_xlabel(_xlabel())
+
+        _global_ylabel(fig, "Events")
+        _tighten(fig, left=0.07, bottom=0.05, hspace=0.08, wspace=0.05)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    print("Saved:", out)
+
+def make_16(parity, label, xlim, outdir):
+    out = f"{outdir}/HISTONLY_{label}_16Subplots_vertical.pdf"
+    bins = np.linspace(xlim[0], xlim[1], NBINS + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
+
+    do_shift = (label.startswith("CER") and DO_ALIGN_CER)
+
+    layout = []
     for g in range(NG):
-        for c in range(NC):
-            if not _channel_ok(g, c):
-                continue
-            k = f"tfinal_Board{b}_Group{g}_Channel{c}"
-            if k in keys:
-                data[(g, c)] = tree[k].array(library="np")
-    return data
+        layout.append((0, g, 2, g))
+    for g in range(NG):
+        layout.append((1, g, 3, g))
 
-# ================= EXISTING: PER-BOARD PDFs (BY GROUP, CHANNELS OVERLAID) =================
-def plot_board(b):
-    colors = plt.cm.tab10.colors
-
-    bin_edges, bin_centers = _binning()
-    xlabel = _xlabel()
-
-    with uproot.open(ANA_FILE) as f:
-        tree = f[TREE_NAME]
-        keys = set(tree.keys())
-        data = _load_board_data(tree, keys, b)
-
-    pdf_hist_only = f"{OUTDIR}/Board{b}_tfinal_byGroup_hist_only_zoomedin.pdf"
-    pdf_hist_fit  = f"{OUTDIR}/Board{b}_tfinal_byGroup_hist_plus_fit_zoomedin.pdf"
-    pdf_gaus_only = f"{OUTDIR}/Board{b}_tfinal_byGroup_gaussians_only_BGClegend.pdf"
-
-    with PdfPages(pdf_hist_only) as pdfH, PdfPages(pdf_hist_fit) as pdfF, PdfPages(pdf_gaus_only) as pdfG:
-        for g in range(NG):
-            figH, axH = plt.subplots(figsize=(7.5, 5))
-            figF, axF = plt.subplots(figsize=(7.5, 5))
-            figG, axG = plt.subplots(figsize=(7.5, 5))
-
-            any_fit_g = False
-
-            for c in range(NC):
-                if not _channel_ok(g, c):
-                    continue
-                if (g, c) not in data:
-                    continue
-
-                arr_abs = _prep_arr(data[(g, c)])
-                if arr_abs is None:
-                    continue
-
-                hist, _ = np.histogram(arr_abs, bins=bin_edges)
-                col = colors[c % len(colors)]
-
-                axH.step(bin_centers, hist, where="mid", lw=1.2, color=col, label=f"C{c}")
-                axF.step(bin_centers, hist, where="mid", lw=1.0, color=col, alpha=0.75, label=f"C{c}")
-
-                popt = _fit_channel(bin_centers, hist, arr_abs, bin_edges)
-                if popt is None:
-                    continue
-
-                N, mu, sigma, B = popt
-                xfit = np.linspace(*XLIM_TFINAL, 800)
-                binw = float(bin_edges[1] - bin_edges[0])
-                yfit = folded_gaussian_counts(xfit, N, mu, sigma, B, binw)
-
-                axF.plot(xfit, yfit, color=col, lw=1.8,
-                         label=f"C{c} fit: μ={mu:.2f}, σ={sigma:.2f}")
-
-                any_fit_g = True
-                axG.plot(xfit, yfit, lw=1.4, color=col, label=f"B{b}G{g}C{c}")
-
-            axH.set_xlabel(xlabel)
-            axH.set_ylabel("Events")
-            axH.set_title(f"Board {b} — Group {g} (|tfinal| > {CUT_MIN} ns) — HIST ONLY")
-            axH.set_xlim(*XLIM_TFINAL)
-            axH.minorticks_on()
-            axH.tick_params(axis="both", which="major", length=6)
-            axH.tick_params(axis="both", which="minor", length=3)
-            axH.legend(fontsize=7, ncol=4, frameon=False)
-            figH.tight_layout()
-            pdfH.savefig(figH)
-            plt.close(figH)
-
-            axF.set_xlabel(xlabel)
-            axF.set_ylabel("Events")
-            axF.set_title(f"Board {b} — Group {g} (|tfinal| > {CUT_MIN} ns) — HIST + FIT")
-            axF.set_xlim(*XLIM_TFINAL)
-            axF.minorticks_on()
-            axF.tick_params(axis="both", which="major", length=6)
-            axF.tick_params(axis="both", which="minor", length=3)
-            axF.legend(fontsize=7, ncol=2, frameon=False)
-            figF.tight_layout()
-            pdfF.savefig(figF)
-            plt.close(figF)
-
-            axG.set_xlabel(xlabel)
-            axG.set_ylabel("Arbitrary units (fit)")
-            axG.set_title(f"Folded-Gaussian curves only — Board {b}, Group {g} (BGC legend)")
-            axG.set_xlim(*XLIM_TFINAL)
-            axG.minorticks_on()
-            axG.tick_params(axis="both", which="major", length=6)
-            axG.tick_params(axis="both", which="minor", length=3)
-            if any_fit_g:
-                axG.legend(fontsize=7, ncol=3, frameon=False)
-            else:
-                axG.text(0.5, 0.5, "No successful fits", ha="center", va="center",
-                         transform=axG.transAxes)
-            figG.tight_layout()
-            pdfG.savefig(figG)
-            plt.close(figG)
-
-    return b
-
-# ================= NEW: PER-BOARD PDFs (BY CHANNEL, MODES/GROUPS OVERLAID) =================
-def plot_board_bychannel_modes_overlay(b):
-    """
-    For each channel C (page), overlay all modes/groups G0..G3 for that board+channel.
-    Produces: hist-only, hist+fit, gaussians-only PDFs.
-    """
-    colors = plt.cm.tab10.colors  # we will color by group
-    bin_edges, bin_centers = _binning()
-    xlabel = _xlabel()
-
-    with uproot.open(ANA_FILE) as f:
-        tree = f[TREE_NAME]
-        keys = set(tree.keys())
-        data = _load_board_data(tree, keys, b)
-
-    pdf_hist_only = f"{OUTDIR}/Board{b}_BYCHANNEL_modesOverlay_hist_only.pdf"
-    pdf_hist_fit  = f"{OUTDIR}/Board{b}_BYCHANNEL_modesOverlay_hist_plus_fit.pdf"
-    pdf_gaus_only = f"{OUTDIR}/Board{b}_BYCHANNEL_modesOverlay_gaussians_only.pdf"
-
-    # channel list present for this board
-    channels_present = sorted({c for (g, c) in data.keys()})
-    # keep only allowed channels (safety)
-    channels_present = [c for c in channels_present if _channel_ok(0, c)]  # ok doesn't depend on g except MCP veto already handled
-
-    with PdfPages(pdf_hist_only) as pdfH, PdfPages(pdf_hist_fit) as pdfF, PdfPages(pdf_gaus_only) as pdfG:
-        for c in channels_present:
-            figH, axH = plt.subplots(figsize=(7.5, 5))
-            figF, axF = plt.subplots(figsize=(7.5, 5))
-            figG, axG = plt.subplots(figsize=(7.5, 5))
-
-            any_hist = False
-            any_fit  = False
-
-            for g in range(NG):
-                if not _channel_ok(g, c):
-                    continue
-                if (g, c) not in data:
-                    continue
-
-                arr_abs = _prep_arr(data[(g, c)])
-                if arr_abs is None:
-                    continue
-
-                hist, _ = np.histogram(arr_abs, bins=bin_edges)
-                any_hist = True
-
-                col = colors[g % len(colors)]
-                axH.step(bin_centers, hist, where="mid", lw=1.2, color=col, label=f"G{g}")
-                axF.step(bin_centers, hist, where="mid", lw=1.0, color=col, alpha=0.75, label=f"G{g}")
-
-                popt = _fit_channel(bin_centers, hist, arr_abs, bin_edges)
-                if popt is None:
-                    continue
-
-                any_fit = True
-                N, mu, sigma, B = popt
-                xfit = np.linspace(*XLIM_TFINAL, 800)
-                binw = float(bin_edges[1] - bin_edges[0])
-                yfit = folded_gaussian_counts(xfit, N, mu, sigma, B, binw)
-
-                axF.plot(xfit, yfit, color=col, lw=1.8,
-                         label=f"G{g} fit: μ={mu:.2f}, σ={sigma:.2f}")
-
-                axG.plot(xfit, yfit, color=col, lw=1.4, label=f"B{b}C{c}G{g}")
-
-            # HIST ONLY page
-            axH.set_xlabel(xlabel)
-            axH.set_ylabel("Events")
-            axH.set_title(f"Board {b} — Channel {c}: modes/groups overlaid — HIST ONLY")
-            axH.set_xlim(*XLIM_TFINAL)
-            axH.minorticks_on()
-            axH.tick_params(axis="both", which="major", length=6)
-            axH.tick_params(axis="both", which="minor", length=3)
-            if any_hist:
-                axH.legend(fontsize=8, ncol=4, frameon=False)
-            else:
-                axH.text(0.5, 0.5, "No groups passed cuts", ha="center", va="center", transform=axH.transAxes)
-            figH.tight_layout()
-            pdfH.savefig(figH)
-            plt.close(figH)
-
-            # HIST + FIT page
-            axF.set_xlabel(xlabel)
-            axF.set_ylabel("Events")
-            axF.set_title(f"Board {b} — Channel {c}: modes/groups overlaid — HIST + FIT")
-            axF.set_xlim(*XLIM_TFINAL)
-            axF.minorticks_on()
-            axF.tick_params(axis="both", which="major", length=6)
-            axF.tick_params(axis="both", which="minor", length=3)
-            if any_hist:
-                axF.legend(fontsize=8, ncol=2, frameon=False)
-            else:
-                axF.text(0.5, 0.5, "No groups passed cuts", ha="center", va="center", transform=axF.transAxes)
-            figF.tight_layout()
-            pdfF.savefig(figF)
-            plt.close(figF)
-
-            # GAUSSIANS ONLY page
-            axG.set_xlabel(xlabel)
-            axG.set_ylabel("Arbitrary units (fit)")
-            axG.set_title(f"Board {b} — Channel {c}: folded-Gaussian curves only (modes overlaid)")
-            axG.set_xlim(*XLIM_TFINAL)
-            axG.minorticks_on()
-            axG.tick_params(axis="both", which="major", length=6)
-            axG.tick_params(axis="both", which="minor", length=3)
-            if any_fit:
-                axG.legend(fontsize=8, ncol=3, frameon=False)
-            else:
-                axG.text(0.5, 0.5, "No successful fits", ha="center", va="center", transform=axG.transAxes)
-            figG.tight_layout()
-            pdfG.savefig(figG)
-            plt.close(figG)
-
-    print(f"Saved: {pdf_hist_only}")
-    print(f"Saved: {pdf_hist_fit}")
-    print(f"Saved: {pdf_gaus_only}")
-
-# ================= FILE-LEVEL: GAUSSIANS ONLY (MULTI-PAGE: one page per board) =================
-def make_allboards_gaussians_only_multipage():
-    pdf_path = f"{OUTDIR}/ALLBOARDS_gaussians_only_BGClegend_multipage.pdf"
-
-    bin_edges, bin_centers = _binning()
-    xlabel = _xlabel()
-
-    with uproot.open(ANA_FILE) as f:
+    with uproot.open(ANA_FILE) as f, PdfPages(out) as pdf:
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        with PdfPages(pdf_path) as pdf:
-            for b in BOARDS:
-                fig, ax = plt.subplots(figsize=(11, 7.5))
-                any_fit = False
+        fig, axes = plt.subplots(8, 2, figsize=(9, 28), sharex=True, sharey=True)
 
-                for g in range(NG):
-                    for c in range(NC):
-                        if not _channel_ok(g, c):
-                            continue
-                        k = f"tfinal_Board{b}_Group{g}_Channel{c}"
-                        if k not in keys:
-                            continue
+        global_ymax = 1
+        cache = {}  # (b,g) -> list of (ch, mu, mode, sig, h)
 
-                        arr_abs = _prep_arr(tree[k].array(library="np"))
-                        if arr_abs is None:
-                            continue
-
-                        hist, _ = np.histogram(arr_abs, bins=bin_edges)
-                        popt = _fit_channel(bin_centers, hist, arr_abs, bin_edges)
-                        if popt is None:
-                            continue
-
-                        any_fit = True
-                        xfit = np.linspace(*XLIM_TFINAL, 800)
-                        N, mu, sigma, B = popt
-                        binw = float(bin_edges[1] - bin_edges[0])
-                        yfit = folded_gaussian_counts(xfit, N, mu, sigma, B, binw)
-                        ax.plot(xfit, yfit, lw=1.1, label=f"B{b}G{g}C{c}")
-
-                ax.set_xlabel(xlabel)
-                ax.set_ylabel("Arbitrary units (fit)")
-                ax.set_title(f"Folded-Gaussian curves only — Board {b} (BGC legend)")
-                ax.set_xlim(*XLIM_TFINAL)
-                ax.minorticks_on()
-                ax.tick_params(axis="both", which="major", length=6)
-                ax.tick_params(axis="both", which="minor", length=3)
-
-                if any_fit:
-                    ax.legend(fontsize=6, ncol=5, frameon=False)
-                else:
-                    ax.text(0.5, 0.5, "No successful fits for this board",
-                            ha="center", va="center", transform=ax.transAxes)
-
-                fig.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
-
-    print(f"Saved: {pdf_path}")
-
-# ================= FILE-LEVEL: GAUSSIANS ONLY (SINGLE PAGE: all boards on one plot) =================
-def make_allboards_gaussians_only_singlepage():
-    pdf_path = f"{OUTDIR}/ALLBOARDS_gaussians_only_BGClegend_SINGLEPAGE.pdf"
-
-    bin_edges, bin_centers = _binning()
-    xlabel = _xlabel()
-
-    with uproot.open(ANA_FILE) as f:
-        tree = f[TREE_NAME]
-        keys = set(tree.keys())
-
-        with PdfPages(pdf_path) as pdf:
-            fig, ax = plt.subplots(figsize=(12, 8))
-            any_fit = False
-
-            for b in BOARDS:
-                for g in range(NG):
-                    for c in range(NC):
-                        if not _channel_ok(g, c):
-                            continue
-                        k = f"tfinal_Board{b}_Group{g}_Channel{c}"
-                        if k not in keys:
-                            continue
-
-                        arr_abs = _prep_arr(tree[k].array(library="np"))
-                        if arr_abs is None:
-                            continue
-
-                        hist, _ = np.histogram(arr_abs, bins=bin_edges)
-                        popt = _fit_channel(bin_centers, hist, arr_abs, bin_edges)
-                        if popt is None:
-                            continue
-
-                        any_fit = True
-                        xfit = np.linspace(*XLIM_TFINAL, 800)
-                        N, mu, sigma, B = popt
-                        binw = float(bin_edges[1] - bin_edges[0])
-                        yfit = folded_gaussian_counts(xfit, N, mu, sigma, B, binw)
-                        ax.plot(xfit, yfit, lw=1.0, label=f"B{b}G{g}C{c}")
-
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel("Arbitrary units (fit)")
-            ax.set_title("Folded-Gaussian curves only — ALL BOARDS (BGC legend)")
-            ax.set_xlim(*XLIM_TFINAL)
-            ax.minorticks_on()
-            ax.tick_params(axis="both", which="major", length=6)
-            ax.tick_params(axis="both", which="minor", length=3)
-
-            if any_fit:
-                ax.legend(fontsize=6, ncol=6, frameon=False)
-            else:
-                ax.text(0.5, 0.5, "No successful fits",
-                        ha="center", va="center", transform=ax.transAxes)
-
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
-
-    print(f"Saved: {pdf_path}")
-
-# ================= FILE-LEVEL: HIST ONLY (MULTI-PAGE: one page per board) =================
-def make_allboards_hist_only_multipage():
-    pdf_path = f"{OUTDIR}/ALLBOARDS_hist_only_multipage.pdf"
-
-    bin_edges, bin_centers = _binning()
-    xlabel = _xlabel()
-
-    with uproot.open(ANA_FILE) as f:
-        tree = f[TREE_NAME]
-        keys = set(tree.keys())
-
-        with PdfPages(pdf_path) as pdf:
-            for b in BOARDS:
-                fig, ax = plt.subplots(figsize=(11, 7.5))
-                any_hist = False
-
-                for g in range(NG):
-                    for c in range(NC):
-                        if not _channel_ok(g, c):
-                            continue
-                        k = f"tfinal_Board{b}_Group{g}_Channel{c}"
-                        if k not in keys:
-                            continue
-
-                        arr_abs = _prep_arr(tree[k].array(library="np"))
-                        if arr_abs is None:
-                            continue
-
-                        hist, _ = np.histogram(arr_abs, bins=bin_edges)
-                        any_hist = True
-                        ax.step(bin_centers, hist, where="mid", lw=1.0, label=f"B{b}G{g}C{c}")
-
-                ax.set_xlabel(xlabel)
-                ax.set_ylabel("Events")
-                ax.set_title(f"HIST ONLY — Board {b} (all channels)")
-                ax.set_xlim(*XLIM_TFINAL)
-                ax.minorticks_on()
-                ax.tick_params(axis="both", which="major", length=6)
-                ax.tick_params(axis="both", which="minor", length=3)
-
-                if any_hist:
-                    ax.legend(fontsize=6, ncol=6, frameon=False)
-                else:
-                    ax.text(0.5, 0.5, "No channels passed cuts",
-                            ha="center", va="center", transform=ax.transAxes)
-
-                fig.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
-
-    print(f"Saved: {pdf_path}")
-
-# ================= FILE-LEVEL: HIST ONLY (SINGLE PAGE: all boards on one plot) =================
-def make_allboards_hist_only_singlepage():
-    pdf_path = f"{OUTDIR}/ALLBOARDS_hist_only_SINGLEPAGE.pdf"
-
-    bin_edges, bin_centers = _binning()
-    xlabel = _xlabel()
-
-    with uproot.open(ANA_FILE) as f:
-        tree = f[TREE_NAME]
-        keys = set(tree.keys())
-
-        with PdfPages(pdf_path) as pdf:
-            fig, ax = plt.subplots(figsize=(12, 8))
-            any_hist = False
-
-            for b in BOARDS:
-                for g in range(NG):
-                    for c in range(NC):
-                        if not _channel_ok(g, c):
-                            continue
-                        k = f"tfinal_Board{b}_Group{g}_Channel{c}"
-                        if k not in keys:
-                            continue
-
-                        arr_abs = _prep_arr(tree[k].array(library="np"))
-                        if arr_abs is None:
-                            continue
-
-                        hist, _ = np.histogram(arr_abs, bins=bin_edges)
-                        any_hist = True
-                        ax.step(bin_centers, hist, where="mid", lw=0.9, label=f"B{b}G{g}C{c}")
-
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel("Events")
-            ax.set_title("HIST ONLY — ALL BOARDS (all channels)")
-            ax.set_xlim(*XLIM_TFINAL)
-            ax.minorticks_on()
-            ax.tick_params(axis="both", which="major", length=6)
-            ax.tick_params(axis="both", which="minor", length=3)
-
-            if any_hist:
-                ax.legend(fontsize=6, ncol=7, frameon=False)
-            else:
-                ax.text(0.5, 0.5, "No channels passed cuts",
-                        ha="center", va="center", transform=ax.transAxes)
-
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
-
-    print(f"Saved: {pdf_path}")
-
-# ================= NEW: FILE-LEVEL "MODES ONLY" PLOTS (4 curves total) =================
-def make_allboards_modes_only_hist_singlepage():
-    """
-    One plot with just modes (groups) of all channels:
-      - concatenate arrays across ALL boards and ALL channels per group g
-      - overlay 4 histograms (G0..G3)
-    """
-    pdf_path = f"{OUTDIR}/ALLBOARDS_MODES_ONLY_hist_only_SINGLEPAGE.pdf"
-
-    bin_edges, bin_centers = _binning()
-    xlabel = _xlabel()
-    colors = plt.cm.tab10.colors
-
-    with uproot.open(ANA_FILE) as f:
-        tree = f[TREE_NAME]
-        keys = set(tree.keys())
-
-        group_arrays = {g: [] for g in range(NG)}
-
-        for b in BOARDS:
-            for g in range(NG):
-                for c in range(NC):
-                    if not _channel_ok(g, c):
+        for r, (bL, gL, bR, gR) in enumerate(layout):
+            for (b, g) in [(bL, gL), (bR, gR)]:
+                if (b, g) in cache:
+                    continue
+                cache[(b, g)] = []
+                for ch in range(NC):
+                    if not _ok(g, ch, parity):
                         continue
-                    k = f"tfinal_Board{b}_Group{g}_Channel{c}"
+                    k = _branch(b, g, ch)
                     if k not in keys:
                         continue
-                    arr_abs = _prep_arr(tree[k].array(library="np"))
+
+                    raw = tree[k].array(library="np")
+                    arr_abs = np.abs(raw)
+                    arr_abs = _prep_abs(arr_abs, xlim)
                     if arr_abs is None:
                         continue
-                    group_arrays[g].append(arr_abs)
 
-    with PdfPages(pdf_path) as pdf:
-        fig, ax = plt.subplots(figsize=(10, 7))
-        any_hist = False
+                    arr_abs = _apply_abs_shift(arr_abs, b, g, ch, do_shift)
 
-        for g in range(NG):
-            if len(group_arrays[g]) == 0:
-                continue
-            allg = np.concatenate(group_arrays[g])
-            hist, _ = np.histogram(allg, bins=bin_edges)
-            any_hist = True
-            ax.step(bin_centers, hist, where="mid", lw=1.4, color=colors[g % len(colors)], label=f"G{g}")
+                    mu = float(arr_abs.mean())
+                    sig = float(arr_abs.std())
+                    mode, h = _mode_and_hist(arr_abs, bins=bins)
 
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("Events")
-        ax.set_title("MODES ONLY — overlay groups (G0–G3), all boards + all channels")
-        ax.set_xlim(*XLIM_TFINAL)
-        ax.minorticks_on()
-        ax.tick_params(axis="both", which="major", length=6)
-        ax.tick_params(axis="both", which="minor", length=3)
+                    cache[(b, g)].append((ch, mu, mode, sig, h))
+                    global_ymax = max(global_ymax, int(h.max()))
 
-        if any_hist:
-            ax.legend(fontsize=10, ncol=4, frameon=False)
-        else:
-            ax.text(0.5, 0.5, "No groups passed cuts", ha="center", va="center", transform=ax.transAxes)
+        for r, (bL, gL, bR, gR) in enumerate(layout):
+            for cidx, (b, g) in enumerate([(bL, gL), (bR, gR)]):
+                ax = axes[r, cidx]
+                for (ch, mu, mode, sig, h) in cache.get((b, g), []):
+                    code = _code(b, g, ch)
+                    ax.fill_between(centers, h, step="mid", color="red", alpha=0.25)
+                    ax.step(centers, h, where="mid", color="red", linewidth=1.0,
+                            label=_legend_label(code, mu, mode, sig))
+                ax.set_xlim(*xlim)
+                ax.set_ylim(0, global_ymax * 1.05)
+                ax.legend(fontsize=6, ncol=1, frameon=False, loc="upper right")
 
-        fig.tight_layout()
+        for ax in axes[-1]:
+            ax.set_xlabel(_xlabel())
+
+        _global_ylabel(fig, "Events")
+        _tighten(fig, left=0.06, right=0.995, top=0.997, bottom=0.03, hspace=0.09, wspace=0.04)
         pdf.savefig(fig)
         plt.close(fig)
 
-    print(f"Saved: {pdf_path}")
+    print("Saved:", out)
 
-def make_allboards_modes_only_gaussians_singlepage():
-    """
-    Same as above, but plot only the folded-Gaussian fit curves for each group g,
-    using the group-concatenated distribution.
-    """
-    pdf_path = f"{OUTDIR}/ALLBOARDS_MODES_ONLY_gaussians_only_SINGLEPAGE.pdf"
+def make_mosaic_hist(grid, label, xlim, outdir, apply_cer_shift=False):
+    out = f"{outdir}/HISTONLY_{label}_mosaic.pdf"
+    bins = np.linspace(xlim[0], xlim[1], NBINS + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
 
-    bin_edges, bin_centers = _binning()
-    xlabel = _xlabel()
-    colors = plt.cm.tab10.colors
+    nrows = len(grid)
+    ncols = max(len(r) for r in grid)
 
-    with uproot.open(ANA_FILE) as f:
+    # only apply abs shifts if requested AND this label is CER-like
+    do_shift = bool(apply_cer_shift) and label.startswith("CER") and DO_ALIGN_CER
+
+    with uproot.open(ANA_FILE) as f, PdfPages(out) as pdf:
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        group_arrays = {g: [] for g in range(NG)}
+        global_ymax = 1
+        cell = {}
+        for r in range(nrows):
+            row = grid[r]
+            for c in range(ncols):
+                if c >= len(row) or row[c] is None:
+                    cell[(r, c)] = None
+                    continue
+                code = row[c]
+                b, g, ch = _parse_code(code)
 
-        for b in BOARDS:
-            for g in range(NG):
-                for c in range(NC):
-                    if not _channel_ok(g, c):
-                        continue
-                    k = f"tfinal_Board{b}_Group{g}_Channel{c}"
-                    if k not in keys:
-                        continue
-                    arr_abs = _prep_arr(tree[k].array(library="np"))
-                    if arr_abs is None:
-                        continue
-                    group_arrays[g].append(arr_abs)
+                if not _base_ok(g, ch):
+                    cell[(r, c)] = {"code": code, "status": "veto"}
+                    continue
 
-    with PdfPages(pdf_path) as pdf:
-        fig, ax = plt.subplots(figsize=(10, 7))
-        any_fit = False
+                k = _branch(b, g, ch)
+                if k not in keys:
+                    cell[(r, c)] = {"code": code, "status": "missing"}
+                    continue
 
-        for g in range(NG):
-            if len(group_arrays[g]) == 0:
-                continue
-            allg = np.concatenate(group_arrays[g])
-            hist, _ = np.histogram(allg, bins=bin_edges)
+                raw = tree[k].array(library="np")
+                arr_abs = np.abs(raw)
+                arr_abs = _prep_abs(arr_abs, xlim)
+                if arr_abs is None:
+                    cell[(r, c)] = {"code": code, "status": "nostats"}
+                    continue
 
-            popt = _fit_channel(bin_centers, hist, allg, bin_edges)
-            if popt is None:
-                continue
+                arr_abs = _apply_abs_shift(arr_abs, b, g, ch, do_shift)
 
-            any_fit = True
-            N, mu, sigma, B = popt
-            xfit = np.linspace(*XLIM_TFINAL, 800)
-            binw = float(bin_edges[1] - bin_edges[0])
-            yfit = folded_gaussian_counts(xfit, N, mu, sigma, B, binw)
+                mu = float(arr_abs.mean())
+                sig = float(arr_abs.std())
+                mode, h = _mode_and_hist(arr_abs, bins=bins)
 
-            ax.plot(xfit, yfit, lw=2.0, color=colors[g % len(colors)],
-                    label=f"G{g}: μ={mu:.2f}, σ={sigma:.2f}")
+                cell[(r, c)] = {"code": code, "status": "ok", "mu": mu, "sig": sig, "mode": mode, "h": h}
+                global_ymax = max(global_ymax, int(h.max()))
 
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("Arbitrary units (fit)")
-        ax.set_title("MODES ONLY — folded-Gaussian curves from group-concatenated data (G0–G3)")
-        ax.set_xlim(*XLIM_TFINAL)
-        ax.minorticks_on()
-        ax.tick_params(axis="both", which="major", length=6)
-        ax.tick_params(axis="both", which="minor", length=3)
+        fig, axes = plt.subplots(nrows, ncols, figsize=(11.5, 2.0 * nrows), sharex=True, sharey=True)
+        if nrows == 1 and ncols == 1:
+            axes = np.array([[axes]])
+        elif nrows == 1:
+            axes = np.array([axes])
+        elif ncols == 1:
+            axes = np.array([[ax] for ax in axes])
 
-        if any_fit:
-            ax.legend(fontsize=10, ncol=2, frameon=False)
-        else:
-            ax.text(0.5, 0.5, "No successful fits", ha="center", va="center", transform=ax.transAxes)
+        for r in range(nrows):
+            for c in range(ncols):
+                ax = axes[r, c]
+                ax.set_xlim(*xlim)
+                ax.set_ylim(0, global_ymax * 1.05)
+                ax.tick_params(labelsize=8)
 
-        fig.tight_layout()
+                entry = cell.get((r, c))
+                if entry is None:
+                    ax.axis("off")
+                    continue
+
+                code = entry["code"]
+                status = entry["status"]
+                if status != "ok":
+                    ax.text(0.5, 0.5, f"{code}\n({status})",
+                            ha="center", va="center", transform=ax.transAxes, fontsize=9)
+                    continue
+
+                h = entry["h"]
+                ax.fill_between(centers, h, step="mid", color="red", alpha=0.25)
+                ax.step(centers, h, where="mid", color="red", linewidth=1.0,
+                        label=_legend_label(code, entry["mu"], entry["mode"], entry["sig"]))
+                ax.legend(fontsize=7, frameon=False, loc="upper right",
+                          handlelength=1.0, borderaxespad=0.2)
+
+        for ax in axes[-1, :]:
+            if ax.axison and ax.get_visible():
+                ax.set_xlabel(_xlabel())
+
+        _global_ylabel(fig, "Events")
+        _tighten(fig, left=0.05, right=0.995, top=0.995, bottom=0.035, hspace=0.08, wspace=0.04)
         pdf.savefig(fig)
         plt.close(fig)
 
-    print(f"Saved: {pdf_path}")
+    print("Saved:", out)
 
-# ================= EVEN-CHANNEL FIT-CENTERED (UNCHANGED) =================
-def _channel_ok_even(g, c):
-    if not _channel_ok(g, c):
-        return False
-    return (c % 2 == 0)
+def make_mosaic_heatmaps_mean_mode(grid, label, xlim, outdir, apply_cer_shift=False):
+    """
+    2-page PDF:
+      page 1: mean(|tfinal|)
+      page 2: mode(|tfinal|) from histogram max bin
+    """
+    out = f"{outdir}/HEATMAP_{label}_mean_mode.pdf"
 
-def make_evenchannels_fitcentered_perboard(b, W=3.0):
-    colors = plt.cm.tab10.colors
-    pdf_path = f"{OUTDIR}/Board{b}_evenChannels_fitCentered_hist_plus_fit.pdf"
+    nrows = len(grid)
+    ncols = max(len(r) for r in grid)
 
-    bin_edges, bin_centers = _binning()
-    xlabel = _xlabel()
+    means = np.full((nrows, ncols), np.nan, dtype=float)
+    modes = np.full((nrows, ncols), np.nan, dtype=float)
+
+    bins = np.linspace(xlim[0], xlim[1], NBINS + 1)
+
+    do_shift = bool(apply_cer_shift) and label.startswith("CER") and DO_ALIGN_CER
 
     with uproot.open(ANA_FILE) as f:
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        data = {}
-        for g in range(NG):
-            for c in range(NC):
-                if not _channel_ok_even(g, c):
+        for r in range(nrows):
+            row = grid[r]
+            for c in range(ncols):
+                if c >= len(row) or row[c] is None:
                     continue
-                k = f"tfinal_Board{b}_Group{g}_Channel{c}"
-                if k in keys:
-                    data[(g, c)] = tree[k].array(library="np")
+                code = row[c]
+                b, g, ch = _parse_code(code)
 
-    with PdfPages(pdf_path) as pdf:
-        for g in range(NG):
-            fig, ax = plt.subplots(figsize=(7.5, 5))
-
-            fit_params = {}
-            mus = []
-            lo_list = []
-            hi_list = []
-
-            for c in range(NC):
-                if not _channel_ok_even(g, c):
-                    continue
-                if (g, c) not in data:
+                if not _base_ok(g, ch):
                     continue
 
-                arr_abs = _prep_arr(data[(g, c)])
+                k = _branch(b, g, ch)
+                if k not in keys:
+                    continue
+
+                raw = tree[k].array(library="np")
+                arr_abs = np.abs(raw)
+                arr_abs = _prep_abs(arr_abs, xlim)
                 if arr_abs is None:
                     continue
 
-                hist, _ = np.histogram(arr_abs, bins=bin_edges)
-                popt = _fit_channel(bin_centers, hist, arr_abs, bin_edges)
-                if popt is None:
-                    continue
+                arr_abs = _apply_abs_shift(arr_abs, b, g, ch, do_shift)
 
-                N, mu, sigma, B = popt
-                fit_params[c] = popt
-                mus.append(mu)
-                lo_list.append(mu - W * sigma)
-                hi_list.append(mu + W * sigma)
+                means[r, c] = float(arr_abs.mean())
+                mode, _ = _mode_and_hist(arr_abs, bins=bins)
+                modes[r, c] = float(mode)
 
-            if len(lo_list) > 0:
-                xlo = max(XLIM_TFINAL[0], float(min(lo_list)))
-                xhi = min(XLIM_TFINAL[1], float(max(hi_list)))
-                if (xhi - xlo) < 1.0:
-                    m = float(np.median(mus))
-                    xlo = max(XLIM_TFINAL[0], m - 1.0)
-                    xhi = min(XLIM_TFINAL[1], m + 1.0)
-            else:
-                xlo, xhi = XLIM_TFINAL
+    with PdfPages(out) as pdf:
+        for mat, title, cbar_label in [
+            (means, f"{label} mean(|tfinal|)", "Mean(|tfinal|) [ns]"),
+            (modes, f"{label} mode(|tfinal|)", "Mode(|tfinal|) [ns]"),
+        ]:
+            fig, ax = plt.subplots(1, 1, figsize=(12.5, 0.65 * nrows + 1.2))
+            im = ax.imshow(mat, origin="upper", aspect="auto", cmap=HEATMAP_CMAP)
 
-            any_drawn = False
-            for c in range(NC):
-                if not _channel_ok_even(g, c):
-                    continue
-                if (g, c) not in data:
-                    continue
+            for rr in range(nrows):
+                row = grid[rr]
+                for cc in range(ncols):
+                    if cc >= len(row) or row[cc] is None:
+                        continue
+                    code = row[cc]
+                    val = mat[rr, cc]
+                    txt = f"{code}\n{val:.2f}" if np.isfinite(val) else f"{code}\n—"
+                    ax.text(cc, rr, txt, ha="center", va="center", fontsize=8)
 
-                arr_abs = _prep_arr(data[(g, c)])
-                if arr_abs is None:
-                    continue
+            ax.set_xticks(range(ncols))
+            ax.set_yticks(range(nrows))
+            ax.set_xticklabels([""] * ncols)
+            ax.set_yticklabels([""] * nrows)
+            ax.tick_params(length=0)
 
-                hist, _ = np.histogram(arr_abs, bins=bin_edges)
-                col = colors[c % len(colors)]
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.set_label(cbar_label)
 
-                ax.step(bin_centers, hist, where="mid", lw=1.0, color=col, alpha=0.75, label=f"C{c}")
-                any_drawn = True
-
-                if c in fit_params:
-                    N, mu, sigma, B = fit_params[c]
-                    xfit = np.linspace(xlo, xhi, 600)
-                    binw = float(bin_edges[1] - bin_edges[0])
-                    yfit = folded_gaussian_counts(xfit, N, mu, sigma, B, binw)
-                    ax.plot(xfit, yfit, color=col, lw=1.8, label=f"C{c} fit: μ={mu:.2f}, σ={sigma:.2f}")
-
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel("Events")
-            ax.set_title(f"Board {b} — Group {g} — EVEN channels only — fit-centered zoom")
-            ax.set_xlim(xlo, xhi)
-            ax.minorticks_on()
-            ax.tick_params(axis="both", which="major", length=6)
-            ax.tick_params(axis="both", which="minor", length=3)
-
-            if any_drawn:
-                ax.legend(fontsize=7, ncol=2, frameon=False)
-            else:
-                ax.text(0.5, 0.5, "No even-channel histograms passed cuts",
-                        ha="center", va="center", transform=ax.transAxes)
-
-            fig.tight_layout()
+            ax.set_title(title)
+            fig.subplots_adjust(left=0.03, right=0.90, top=0.90, bottom=0.05)
             pdf.savefig(fig)
             plt.close(fig)
 
-    print(f"Saved: {pdf_path}")
+    print("Saved:", out)
+
 
 # ================= MAIN =================
 def main():
-    print("Generating per-board PDFs (by GROUP, channels overlaid): hist-only + hist+fit + gaussians-only-by-group.")
-    nproc = min(cpu_count(), len(list(BOARDS)))
-    with Pool(nproc) as pool:
-        for b in tqdm(pool.imap_unordered(plot_board, BOARDS),
-                      total=len(list(BOARDS)),
-                      desc="Boards (by group)"):
-            print(f"  → Board {b} done (by group)")
+    global ANA_FILE, TREE_NAME, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, HSPACE, WSPACE
+    global DO_ALIGN_CER, CER_ABS_SHIFTS, CER_TARGETS, CER_QC_STATS
+    global QC_MIN_GOOD_N, QC_MIN_PEAK, QC_MIN_PROM, QC_MAX_SIGMA
 
-    print("Generating NEW per-board PDFs (by CHANNEL, modes/groups overlaid).")
-    for b in BOARDS:
-        plot_board_bychannel_modes_overlay(b)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ana-file", default=ANA_FILE, help="Input ROOT file")
+    ap.add_argument("--tree", default=TREE_NAME, help="Tree name")
+    ap.add_argument("--outdir", default=None,
+                    help="Output directory. Default: ./TRUE-HGtiming/3mmplots_histonly/<runXXXX>")
+    ap.add_argument("--xmin", type=float, default=7.0, help="Min |tfinal| for plots/heatmaps")
+    ap.add_argument("--xmax", type=float, default=14.0, help="Max |tfinal| for plots/heatmaps")
+    ap.add_argument("--nbins", type=int, default=NBINS, help="Histogram bins")
+    ap.add_argument("--cut-min", type=float, default=CUT_MIN, help="Ignore |tfinal| < cut-min")
+    ap.add_argument("--min-entries", type=int, default=MIN_ENTRIES, help="Min entries after cuts")
+    ap.add_argument("--min-raw", type=int, default=MIN_RAW, help="Min raw entries before cuts")
+    ap.add_argument("--hspace", type=float, default=HSPACE, help="subplot hspace (smaller=tighter)")
+    ap.add_argument("--wspace", type=float, default=WSPACE, help="subplot wspace (smaller=tighter)")
 
-    print("Generating file-level Gaussian-only PDFs (multi-page + single-page).")
-    make_allboards_gaussians_only_multipage()
-    make_allboards_gaussians_only_singlepage()
+    # alignment toggles + QC
+    ap.add_argument("--align-cer", action="store_true", help="Enable CER abs-mean alignment (exact mean(|tfinal|) equalization)")
+    ap.add_argument("--no-align-cer", action="store_true", help="Force disable CER alignment")
+    ap.add_argument("--qc-min-good-n", type=int, default=QC_MIN_GOOD_N)
+    ap.add_argument("--qc-min-peak", type=float, default=QC_MIN_PEAK)
+    ap.add_argument("--qc-min-prom", type=float, default=QC_MIN_PROM)
+    ap.add_argument("--qc-max-sigma", type=float, default=QC_MAX_SIGMA)
 
-    print("Generating file-level HIST-only PDFs (multi-page + single-page).")
-    make_allboards_hist_only_multipage()
-    make_allboards_hist_only_singlepage()
+    args = ap.parse_args()
 
-    print("Generating NEW file-level MODES-ONLY PDFs (4 curves total).")
-    make_allboards_modes_only_hist_singlepage()
-    make_allboards_modes_only_gaussians_singlepage()
+    ANA_FILE = args.ana_file
+    TREE_NAME = args.tree
+    NBINS = args.nbins
+    CUT_MIN = args.cut_min
+    MIN_ENTRIES = args.min_entries
+    MIN_RAW = args.min_raw
+    HSPACE = args.hspace
+    WSPACE = args.wspace
 
-    print("Generating EVEN-channel fit-centered zoom PDFs (one per board).")
-    for b in BOARDS:
-        make_evenchannels_fitcentered_perboard(b, W=3.0)
+    QC_MIN_GOOD_N = args.qc_min_good_n
+    QC_MIN_PEAK = args.qc_min_peak
+    QC_MIN_PROM = args.qc_min_prom
+    QC_MAX_SIGMA = args.qc_max_sigma
 
-    print("Done calibrating the plots")
+    if args.no_align_cer:
+        DO_ALIGN_CER = False
+    elif args.align_cer:
+        DO_ALIGN_CER = True
+
+    outdir = args.outdir or _default_outdir_for(ANA_FILE)
+    os.makedirs(outdir, exist_ok=True)
+
+    print("ANA_FILE :", ANA_FILE)
+    print("TREE_NAME:", TREE_NAME)
+    print("OUTDIR   :", outdir)
+
+    xlim = (args.xmin, args.xmax)
+
+    # ---------------- Build CER ABS shifts (Quartz + Plastic) ----------------
+    CER_ABS_SHIFTS = {}
+    CER_TARGETS = {}
+    CER_QC_STATS = {}
+
+    if DO_ALIGN_CER:
+        with uproot.open(ANA_FILE) as f:
+            tree = f[TREE_NAME]
+            keys = set(tree.keys())
+
+            q_shifts, q_target, q_stats = _build_abs_shift_map(tree, keys, QUARTZ_GRID, xlim)
+            p_shifts, p_target, p_stats = _build_abs_shift_map(tree, keys, PLASTIC_GRID, xlim)
+
+            CER_ABS_SHIFTS.update(q_shifts)
+            CER_ABS_SHIFTS.update(p_shifts)
+
+            CER_TARGETS = {"Quartz": q_target, "Plastic": p_target}
+            CER_QC_STATS = {"Quartz": q_stats, "Plastic": p_stats}
+
+        print("\nCER alignment: ON (ABS-space, target = least mean among GOOD channels)")
+        print(f"  Quartz target mean(|tfinal|)  = {CER_TARGETS['Quartz']:.4f} ns   (good={len(q_shifts)})")
+        print(f"  Plastic target mean(|tfinal|) = {CER_TARGETS['Plastic']:.4f} ns   (good={len(p_shifts)})")
+        print("  QC:", f"N>={QC_MIN_GOOD_N}, peak>={QC_MIN_PEAK}, prom>={QC_MIN_PROM}, sigma<={QC_MAX_SIGMA}\n")
+    else:
+        print("\nCER alignment: OFF\n")
+
+    # ---------------- Original outputs (kept) ----------------
+    make_boards("odd",  "SCI", xlim, outdir)       # SCI (no shift)
+    make_16(   "odd",  "SCI", xlim, outdir)
+
+    make_boards("even", "CER", xlim, outdir)       # CER (ABS shift applied inside)
+    make_16(   "even", "CER", xlim, outdir)
+
+    # CER Quartz/Plastic mosaics + mean/mode heatmaps (ABS shift applied)
+    make_mosaic_hist(QUARTZ_GRID, "CER-Quartz", xlim, outdir, apply_cer_shift=True)
+    make_mosaic_heatmaps_mean_mode(QUARTZ_GRID, "CER-Quartz", xlim, outdir, apply_cer_shift=True)
+
+    make_mosaic_hist(PLASTIC_GRID, "CER-Plastic", xlim, outdir, apply_cer_shift=True)
+    make_mosaic_heatmaps_mean_mode(PLASTIC_GRID, "CER-Plastic", xlim, outdir, apply_cer_shift=True)
+
+    # Combined CER mosaic hist + mean/mode heatmaps (ABS shift applied)
+    make_mosaic_hist(CER_ALL_GRID, "CER-AllChannels", xlim, outdir, apply_cer_shift=True)
+    make_mosaic_heatmaps_mean_mode(CER_ALL_GRID, "CER-AllChannels", xlim, outdir, apply_cer_shift=True)
+
+    # ---------------- SCI-AllChannels mosaic hist + mean/mode heatmaps (no CER shift) ----------------
+    make_mosaic_hist(SCI_ALL_GRID, "SCI-AllChannels", xlim, outdir, apply_cer_shift=False)
+    make_mosaic_heatmaps_mean_mode(SCI_ALL_GRID, "SCI-AllChannels", xlim, outdir, apply_cer_shift=False)
+
+    print("All done.")
+
 
 if __name__ == "__main__":
     main()
