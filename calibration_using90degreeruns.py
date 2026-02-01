@@ -868,7 +868,7 @@ def main():
     for b in BOARDS:
         make_evenchannels_fitcentered_perboard(b, W=3.0)
 
-    print("Done.")
+    print("Done calibrating the plots")
 
 if __name__ == "__main__":
     main()
