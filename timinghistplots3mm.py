@@ -94,13 +94,28 @@ SCI_ALL_GRID = [
 ]
 
 # ================= HELPERS =================
+# ================= HELPERS =================
 def _infer_run_label(path: str) -> str:
     base = os.path.basename(path)
-    m = re.search(r"run(\d+)", base)
-    return f"run{m.group(1)}" if m else "runUnknown"
+
+    # run#### part
+    m_run = re.search(r"run(\d+)", base)
+    run_part = f"run{m_run.group(1)}" if m_run else "runUnknown"
+
+    # timestamp-ish part (11–12 digits after an underscore)
+    # examples:
+    #   run1513_250928194230_converted_timingskim.root
+    #   run1513_250928194230_TimingDAQ_postaskim.root
+    m_ts = re.search(r"_(\d{11,12})(?:_|\.|$)", base)
+    ts_part = m_ts.group(1) if m_ts else None
+
+    if ts_part:
+        return f"{run_part}_{ts_part}_heatmap_and_hists"
+    return f"{run_part}_heatmap_and_hists_"
+
 
 def _default_outdir_for(ana_file: str) -> str:
-    return os.path.join("./TRUE-HGtiming/3mmplots_histonly", _infer_run_label(ana_file))
+    return os.path.join("./TRUE-HGtiming/2Dplots_for_timing", _infer_run_label(ana_file))
 
 def _global_ylabel(fig, text="Events"):
     fig.text(0.010, 0.5, text, va="center", rotation=90)
@@ -452,8 +467,8 @@ def main():
     ap.add_argument("--tree", default=TREE_NAME, help="Tree name")
     ap.add_argument("--outdir", default=None,
                     help="Output directory. Default: ./TRUE-HGtiming/3mmplots_histonly/<runXXXX>")
-    ap.add_argument("--xmin", type=float, default=7.0, help="Min |tfinal| for plots/heatmaps")
-    ap.add_argument("--xmax", type=float, default=14.0, help="Max |tfinal| for plots/heatmaps")
+    ap.add_argument("--xmin", type=float, default=4.0, help="Min |tfinal| for plots/heatmaps")
+    ap.add_argument("--xmax", type=float, default=20.0, help="Max |tfinal| for plots/heatmaps")
     ap.add_argument("--nbins", type=int, default=NBINS, help="Histogram bins")
     ap.add_argument("--cut-min", type=float, default=CUT_MIN, help="Ignore |tfinal| < cut-min")
     ap.add_argument("--min-entries", type=int, default=MIN_ENTRIES, help="Min entries after cuts")
