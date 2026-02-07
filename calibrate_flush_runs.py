@@ -1,640 +1,329 @@
+
+
 #!/usr/bin/env python3
 import os
 import re
-import json
-import csv
 import argparse
 import numpy as np
 import uproot
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
-# ================= DEFAULTS =================
+# ================= CONFIG =================
 TREE_NAME = "EventTree"
-
 NBINS = 200
-CUT_MIN = 1.0
-MIN_ENTRIES = 200
+XLIM = (7.0, 14.0)
+
 MIN_RAW = 500
+MIN_ENTRIES = 200
 
-NG = 4
-NC = 9
-
-HEATMAP_CMAP = "viridis_r"
-HSPACE = 0.10
-WSPACE = 0.05
-
-# ================= MOSAIC GRIDS =================
+# ================= GRIDS =================
+# ================= GRIDS =================
 QUARTZ_GRID = [
-    [None,  "002", None,  None],
-    ["006", "004", "206", "204"],
-    ["016", "014", "216", "214"],
-    ["026", "024", "226", "224"],
-    [None,  "030", None,  None],
-    [None,  "034", None,  None],
-    ["106", "104", "306", "304"],
-    ["116", "114", "316", "314"],
-    ["126", "124", "326", "324"],
-    [None,  "134", None,  "334"],
+    [None,"002",None,None],
+    ["006","004","206","204"],
+    ["016","014","216","214"],
+    ["026","024","226","224"],
+    [None,"030",None,None],
+    [None,"034",None,None],
+    ["106","104","306","304"],
+    ["116","114","316","314"],
+    ["126","124","326","324"],
+    [None,"134",None,"334"],
 ]
 
 PLASTIC_GRID = [
-    [None,  "000", "202", "200"],
-    ["012", "010", "212", "210"],
-    ["022", "020", "222", "220"],
-    ["032", None,  "232", "230"],
-    ["102", "100", "302", "300"],
-    ["112", "110", "312", "310"],
-    ["122", "120", "322", "320"],
-    ["132", "130", "332", "330"],
+    [None,"000","202","200"],
+    ["012","010","212","210"],
+    ["022","020","222","220"],
+    ["032",None,"232","230"],
+    ["102","100","302","300"],
+    ["112","110","312","310"],
+    ["122","120","322","320"],
+    ["132","130","332","330"],
 ]
 
-CER_ALL_GRID = [
-    ["002", "000", "202", "200"],
-    ["006", "004", "206", "204"],
-    ["012", "010", "212", "210"],
-    ["016", "014", "216", "214"],
-    ["022", "020", "222", "220"],
-    ["026", "024", "226", "224"],
-    ["032", "030", "232", "230"],
-    [None,  "034", None,  "234"],
-    ["102", "100", "302", "300"],
-    ["106", "104", "306", "304"],
-    ["112", "110", "312", "310"],
-    ["116", "114", "316", "314"],
-    ["122", "120", "322", "320"],
-    ["126", "124", "326", "324"],
-    ["132", "130", "332", "330"],
-    [None,  "134", None,  "334"],
+SCI_GRID = [
+    ["003","001","203","201"],
+    ["007","005","207","205"],
+    ["013","011","213","211"],
+    ["017","015","217","215"],
+    ["023","021","223","221"],
+    ["027","025","227","225"],
+    ["033","031","233","231"],
+    [None,"035",None,"235"],
+    ["103","101","303","301"],
+    ["107","105","307","305"],
+    ["113","111","313","311"],
+    ["117","115","317","315"],
+    ["123","121","323","321"],
+    ["127","125","327","325"],
+    ["133","131","333","331"],
+    [None,"135",None,"335"],
 ]
 
-SCI_ALL_GRID = [
-    ["003", "001", "203", "201"],
-    ["007", "005", "207", "205"],
-    ["013", "011", "213", "211"],
-    ["017", "015", "217", "215"],
-    ["023", "021", "223", "221"],
-    ["027", "025", "227", "225"],
-    ["033", "031", "233", "231"],
-    [None,  "035", None,  "235"],
-    ["103", "101", "303", "301"],
-    ["107", "105", "307", "305"],
-    ["113", "111", "313", "311"],
-    ["117", "115", "317", "315"],
-    ["123", "121", "323", "321"],
-    ["127", "125", "327", "325"],
-    ["133", "131", "333", "331"],
-    [None,  "135", None,  "335"],
-]
-
-# ================= QC / ALIGNMENT =================
-DO_ALIGN = True
-
-QC_MIN_GOOD_N = 10
-QC_MIN_PEAK = 8
-QC_MIN_PROM = 8.0
-QC_MAX_SIGMA = 1.82  # None disables
-
-# Computed from reference run
-ABS_SHIFTS = {}     # (b,g,c) -> delta added to |tfinal|
-TARGETS = {}        # group -> target mean
-ANCHORS = {}        # group -> anchor channel info
-QC_STATS = {}       # group -> {(b,g,c): stats}
+FAMILIES = {
+    "CER-Quartz": QUARTZ_GRID,
+    "CER-Plastic": PLASTIC_GRID,
+    "SCI": SCI_GRID,
+}
 
 # ================= HELPERS =================
-def _infer_run_label(path: str) -> str:
-    base = os.path.basename(path)
-    m = re.search(r"(run\d+_\d{11,12})", base)
-    return m.group(1) if m else os.path.splitext(base)[0]
+def parse_code(code):
+    return int(code[0]), int(code[1]), int(code[2])
 
-def _mkdir(p):
-    os.makedirs(p, exist_ok=True)
-    return p
-
-def _xlabel():
-    return r"$|t_{\mathrm{final}}|$ [ns]"
-
-def _global_ylabel(fig, text="Events"):
-    fig.text(0.010, 0.5, text, va="center", rotation=90)
-
-def _tighten(fig, left=0.05, right=0.995, top=0.995, bottom=0.035, hspace=None, wspace=None):
-    if hspace is None: hspace = HSPACE
-    if wspace is None: wspace = WSPACE
-    fig.subplots_adjust(left=left, right=right, top=top, bottom=bottom, hspace=hspace, wspace=wspace)
-
-def _parse_code(code_str):
-    b = int(code_str[0]); g = int(code_str[1]); c = int(code_str[2])
-    return b, g, c
-
-def _branch(b, g, c):
+def branch_name(b, g, c):
     return f"tfinal_Board{b}_Group{g}_Channel{c}"
 
-def _base_ok(g, c):
-    if c == 8:
-        return False
-    if g == 3 and c in (6, 7):
-        return False
-    return True
+def prep_array(arr):
+    arr = np.abs(arr)
+    arr = arr[np.isfinite(arr)]
+    arr = arr[(arr >= XLIM[0]) & (arr <= XLIM[1])]
+    if arr.size < MIN_ENTRIES:
+        return None
+    return arr
 
-def _prep_abs(arr_abs, xlim):
-    if arr_abs.size < MIN_RAW:
-        return None
-    arr_abs = arr_abs[np.isfinite(arr_abs)]
-    arr_abs = arr_abs[arr_abs >= CUT_MIN]
-    if arr_abs.size < MIN_ENTRIES:
-        return None
-    arr_abs = arr_abs[(arr_abs >= xlim[0]) & (arr_abs <= xlim[1])]
-    if arr_abs.size < 50:
-        return None
-    return arr_abs
-
-def _mode_and_hist(arr_abs, bins):
-    h, edges = np.histogram(arr_abs, bins=bins)
+def hist_stats(arr, bins):
+    h, edges = np.histogram(arr, bins=bins)
     if h.sum() == 0:
-        return np.nan, h
-    imax = int(np.argmax(h))
-    mode = 0.5 * (edges[imax] + edges[imax + 1])
-    return float(mode), h
+        return None
+    mu = arr.mean()
+    mode = 0.5 * (edges[np.argmax(h)] + edges[np.argmax(h)+1])
+    return mu, mode, h
 
-def _hist_quality(arr_abs, bins):
-    h, _ = np.histogram(arr_abs, bins=bins)
-    peak = float(h.max()) if h.size else 0.0
-    baseline = float(np.median(h)) if h.size else 0.0
-    prom = peak / max(1.0, baseline)
-    mu = float(np.mean(arr_abs)) if arr_abs.size else np.nan
-    sig = float(np.std(arr_abs)) if arr_abs.size else np.nan
-    N = int(arr_abs.size)
+from scipy.optimize import curve_fit
 
-    ok = True
-    if N < QC_MIN_GOOD_N: ok = False
-    if peak < QC_MIN_PEAK: ok = False
-    if prom < QC_MIN_PROM: ok = False
-    if QC_MAX_SIGMA is not None and np.isfinite(sig) and sig > QC_MAX_SIGMA: ok = False
+def gaussian(x, A, mu, sigma):
+    return A * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
-    return ok, {"N": N, "peak": peak, "baseline": baseline, "prom": prom, "mu": mu, "sig": sig, "ok": ok}
 
-def _grid_codes(grid):
-    for row in grid:
-        for code in row:
-            if code is None:
-                continue
-            yield code
-
-def _apply_shift(arr_abs, b, g, c, do_shift):
-    if not do_shift:
-        return arr_abs
-    return arr_abs + float(ABS_SHIFTS.get((b, g, c), 0.0))
-
-# ================= CALIBRATION TABLE OUTPUT =================
-def _calib_entry(code, b, g, ch, branch, group_name, st, target, anchor_code):
-    mu = float(st.get("mu", np.nan))
-    sig = float(st.get("sig", np.nan))
-    ok = bool(st.get("ok", False))
-    shift = (float(target) - mu) if (ok and np.isfinite(mu) and np.isfinite(target)) else 0.0
-
-    return {
-        "code": code,
-        "board": int(b),
-        "group": int(g),
-        "channel": int(ch),
-        "branch": branch,
-        "material_group": group_name,
-        "mean_abs": mu,
-        "sigma_abs": sig,
-        "N": int(st.get("N", 0)),
-        "peak": float(st.get("peak", 0.0)),
-        "prom": float(st.get("prom", 0.0)),
-        "ok": ok,
-        "anchor_code": anchor_code,
-        "target_mean_abs": float(target) if np.isfinite(target) else np.nan,
-        "shift_abs": float(shift),
-    }
-
-def _write_calibration_json(entries, outpath, meta=None):
-    payload = {"meta": meta or {}, "entries": entries}
-    with open(outpath, "w") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-    print("Saved calibration JSON:", outpath)
-
-def _write_calibration_csv(entries, outpath):
-    if not entries:
-        return
-    fieldnames = list(entries[0].keys())
-    with open(outpath, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        for e in entries:
-            w.writerow(e)
-    print("Saved calibration CSV:", outpath)
-
-# ================= BUILD SHIFTS FROM REFERENCE (ANCHOR=MAX EVENTS) =================
-def build_reference_shifts(reference_file, xlim):
+def gaussian_peak_mean(arr, bins, window=0.4):
     """
-    For each group (Quartz, Plastic, SCI):
-      - compute stats for each channel
-      - choose anchor = channel with max N among GOOD channels
-      - target = mean_abs(anchor)
-      - shift = target - mean_abs(channel)
+    Fit a Gaussian to the peak of |tfinal| and return the fitted mean.
+    Falls back to simple mean if fit fails.
     """
-    global ABS_SHIFTS, TARGETS, ANCHORS, QC_STATS
+    h, edges = np.histogram(arr, bins=bins)
+    centers = 0.5 * (edges[1:] + edges[:-1])
 
-    ABS_SHIFTS = {}
-    TARGETS = {}
-    ANCHORS = {}
-    QC_STATS = {}
+    imax = np.argmax(h)
+    x_peak = centers[imax]
 
-    bins = np.linspace(xlim[0], xlim[1], NBINS + 1)
+    mask = (centers > x_peak - window) & (centers < x_peak + window)
+    x_fit = centers[mask]
+    y_fit = h[mask]
 
-    def _group(grid, group_name):
-        with uproot.open(reference_file) as f:
-            tree = f[TREE_NAME]
-            keys = set(tree.keys())
+    if len(x_fit) < 5:
+        return arr.mean()  # fallback
 
-            stats = {}
-            good = []
+    try:
+        p0 = [y_fit.max(), x_peak, 0.15]
+        popt, _ = curve_fit(gaussian, x_fit, y_fit, p0=p0)
+        mu_fit = popt[1]
+        return float(mu_fit)
+    except RuntimeError:
+        return arr.mean()
 
-            for code in _grid_codes(grid):
-                b, g, ch = _parse_code(code)
-                if not _base_ok(g, ch):
+
+
+
+# ================= CALIBRATION =================
+def derive_family_calibration(root_file, grid):
+    bins = np.linspace(*XLIM, NBINS+1)
+    stats = {}
+    arrays = {}   # <-- ADD THIS
+
+    with uproot.open(root_file) as f:
+        tree = f[TREE_NAME]
+        keys = set(tree.keys())
+
+        for row in grid:
+            for code in row:
+                if code is None:
                     continue
-                k = _branch(b, g, ch)
+
+                b, g, c = parse_code(code)
+                k = branch_name(b, g, c)
                 if k not in keys:
                     continue
+
                 raw = tree[k].array(library="np")
-                arr_abs = _prep_abs(np.abs(raw), xlim)
-                if arr_abs is None:
+                if raw.size < MIN_RAW:
                     continue
-                ok, st = _hist_quality(arr_abs, bins=bins)
-                stats[(b, g, ch)] = st
-                if ok and np.isfinite(st["mu"]):
-                    good.append((code, b, g, ch, st["N"], st["mu"]))
 
-        if len(good) == 0:
-            return {}, np.nan, stats, None
+                arr = prep_array(raw)
+                if arr is None:
+                    continue
 
-        # anchor = max N
-        good_sorted = sorted(good, key=lambda t: t[4], reverse=True)
-        anchor_code, ab, ag, ach, aN, amu = good_sorted[0]
-        target = float(amu)
+                # store the array so we can fit the anchor later
+                arrays[(b, g, c)] = arr   # <-- ADD THIS
 
-        shifts = {}
-        for (code, b, g, ch, N, mu) in good_sorted:
-            shifts[(b, g, ch)] = float(target - float(mu))
+                # whatever stats you compute per channel
+                mu = float(arr.mean())
+                h, edges = np.histogram(arr, bins=bins)
+                mode = float(0.5 * (edges[np.argmax(h)] + edges[np.argmax(h)+1])) if h.sum() else np.nan
 
-        anchor_info = {
-            "anchor_code": anchor_code,
-            "anchor_board": int(ab),
-            "anchor_group": int(ag),
-            "anchor_channel": int(ach),
-            "anchor_N": int(aN),
-            "anchor_mean_abs": float(amu),
-        }
-        return shifts, target, stats, anchor_info
+                stats[(b, g, c)] = {"N": int(arr.size), "mu": mu, "mode": mode}
 
-    q_shifts, q_target, q_stats, q_anchor = _group(QUARTZ_GRID, "CER-Quartz")
-    p_shifts, p_target, p_stats, p_anchor = _group(PLASTIC_GRID, "CER-Plastic")
-    s_shifts, s_target, s_stats, s_anchor = _group(SCI_ALL_GRID, "SCI")
+    if not stats:
+        raise RuntimeError("No usable channels found for this family/grid.")
 
-    ABS_SHIFTS.update(q_shifts)
-    ABS_SHIFTS.update(p_shifts)
-    ABS_SHIFTS.update(s_shifts)
+    # pick anchor by max N
+    anchor_key, anchor_stats = max(stats.items(), key=lambda x: x[1]["N"])
 
-    TARGETS = {"CER-Quartz": q_target, "CER-Plastic": p_target, "SCI": s_target}
-    QC_STATS = {"CER-Quartz": q_stats, "CER-Plastic": p_stats, "SCI": s_stats}
-    ANCHORS = {"CER-Quartz": q_anchor, "CER-Plastic": p_anchor, "SCI": s_anchor}
+    # define anchor_array properly (THIS FIXES YOUR ERROR)
+    anchor_array = arrays[anchor_key]
+    anchor_mu = gaussian_peak_mean(anchor_array, bins)
+
+    shifts = {}
+    for key, st in stats.items():
+        shifts[key] = float(anchor_mu - st["mu"])
+
+    return shifts, (anchor_key, {"mu": anchor_mu, "N": anchor_stats["N"]}), stats
+
 
 # ================= PLOTTING =================
-def mosaic_overlay_pre_post(run_file, grid, label, xlim, outdir, apply_post_shift):
-    """
-    One PDF: each channel cell shows PRE and POST overlayed.
-    - PRE: no shift
-    - POST: apply ABS_SHIFTS if apply_post_shift True
-    """
-    out = os.path.join(outdir, f"OVERLAY_PREPOST_{label}_mosaic.pdf")
-    bins = np.linspace(xlim[0], xlim[1], NBINS + 1)
-    centers = 0.5 * (bins[1:] + bins[:-1])
+def mosaic_pre_post(root_file, grid, shifts, outname, title):
+    bins = np.linspace(*XLIM, NBINS+1)
+    centers = 0.5*(bins[1:] + bins[:-1])
 
     nrows = len(grid)
     ncols = max(len(r) for r in grid)
 
-    with uproot.open(run_file) as f:
+    with uproot.open(root_file) as f:
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        cell = {}
-        global_ymax = 1
+        fig, axes = plt.subplots(nrows, ncols, figsize=(12, 2.2*nrows), sharex=True, sharey=True)
+        axes = np.atleast_2d(axes)
 
-        for r in range(nrows):
-            row = grid[r]
-            for c in range(ncols):
-                if c >= len(row) or row[c] is None:
-                    cell[(r, c)] = None
-                    continue
-
-                code = row[c]
-                b, g, ch = _parse_code(code)
-
-                if not _base_ok(g, ch):
-                    cell[(r, c)] = {"code": code, "status": "veto"}
-                    continue
-
-                k = _branch(b, g, ch)
-                if k not in keys:
-                    cell[(r, c)] = {"code": code, "status": "missing"}
-                    continue
-
-                raw = tree[k].array(library="np")
-                pre = _prep_abs(np.abs(raw), xlim)
-                if pre is None:
-                    cell[(r, c)] = {"code": code, "status": "nostats"}
-                    continue
-
-                post = _apply_shift(pre, b, g, ch, apply_post_shift)
-
-                pre_mode, pre_h = _mode_and_hist(pre, bins=bins)
-                post_mode, post_h = _mode_and_hist(post, bins=bins)
-
-                global_ymax = max(global_ymax, int(pre_h.max()), int(post_h.max()))
-
-                cell[(r, c)] = {
-                    "code": code, "status": "ok",
-                    "pre": {"mu": float(pre.mean()), "sig": float(pre.std()), "mode": pre_mode, "h": pre_h},
-                    "post": {"mu": float(post.mean()), "sig": float(post.std()), "mode": post_mode, "h": post_h},
-                }
-
-    with PdfPages(out) as pdf:
-        fig, axes = plt.subplots(nrows, ncols, figsize=(11.5, 2.0 * nrows), sharex=True, sharey=True)
-        if nrows == 1 and ncols == 1:
-            axes = np.array([[axes]])
-        elif nrows == 1:
-            axes = np.array([axes])
-        elif ncols == 1:
-            axes = np.array([[ax] for ax in axes])
-
-        # One global legend: PRE vs POST
-        pre_handle = None
-        post_handle = None
-
-        for r in range(nrows):
-            for c in range(ncols):
-                ax = axes[r, c]
-                ax.set_xlim(*xlim)
-                ax.set_ylim(0, global_ymax * 1.05)
-                ax.tick_params(labelsize=8)
-
-                entry = cell.get((r, c))
-                if entry is None:
+        for r,row in enumerate(grid):
+            for c,code in enumerate(row):
+                ax = axes[r,c]
+                if code is None:
                     ax.axis("off")
                     continue
 
-                code = entry["code"]
-                status = entry["status"]
-
-                if status != "ok":
-                    ax.text(0.5, 0.5, f"{code}\n({status})",
-                            ha="center", va="center", transform=ax.transAxes, fontsize=9)
+                b,g,ch = parse_code(code)
+                k = branch_name(b,g,ch)
+                if k not in keys:
+                    ax.text(0.5,0.5,"missing",ha="center",va="center")
                     continue
 
-                pre = entry["pre"]
-                post = entry["post"]
+                raw = prep_array(tree[k].array(library="np"))
+                if raw is None:
+                    ax.text(0.5,0.5,"nostats",ha="center",va="center")
+                    continue
 
-                # PRE (filled)
-                ln1, = ax.step(centers, pre["h"], where="mid", linewidth=1.0, alpha=0.95)
-                ax.fill_between(centers, pre["h"], step="mid", alpha=0.18)
+                mu_pre, _, h_pre = hist_stats(raw, bins)
+                post = raw + shifts.get((b,g,ch), 0.0)
+                mu_post, _, h_post = hist_stats(post, bins)
 
-                # POST (line only)
-                ln2, = ax.step(centers, post["h"], where="mid", linewidth=1.4, alpha=0.95)
+                ax.step(centers, h_pre, where="mid", label="PRE", lw=1)
+                ax.step(centers, h_post, where="mid", label="POST", lw=1.5)
+                ax.set_title(code, fontsize=9)
+                ax.text(0.02,0.95,
+                        f"μpre={mu_pre:.2f}\nμpost={mu_post:.2f}",
+                        transform=ax.transAxes,
+                        va="top",fontsize=8)
 
-                if pre_handle is None: pre_handle = ln1
-                if post_handle is None: post_handle = ln2
+        fig.suptitle(title)
+        fig.text(0.04,0.5,"Events",rotation=90,va="center")
+        for ax in axes[-1]:
+            ax.set_xlabel("|tfinal| [ns]")
 
-                ax.set_title(code, fontsize=9, pad=2)
+        handles, labels = axes[0,0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="upper right")
+        fig.tight_layout(rect=[0.04,0.03,0.98,0.95])
 
-                # concise stats box (so you can see "flushed")
-                txt = (f"PRE  μ={pre['mu']:.2f} σ={pre['sig']:.2f}\n"
-                       f"POST μ={post['mu']:.2f} σ={post['sig']:.2f}")
-                ax.text(0.02, 0.98, txt, transform=ax.transAxes,
-                        ha="left", va="top", fontsize=7,
-                        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.75, edgecolor="none"))
-
-        for ax in axes[-1, :]:
-            if ax.axison and ax.get_visible():
-                ax.set_xlabel(_xlabel())
-
-        _global_ylabel(fig, "Events")
-        _tighten(fig, left=0.05, right=0.86, top=0.995, bottom=0.035, hspace=0.08, wspace=0.04)
-
-        # global legend placed to the right
-        if pre_handle is not None and post_handle is not None:
-            fig.legend([pre_handle, post_handle], ["PRE (raw)", "POST (shifted)"],
-                       loc="center left", bbox_to_anchor=(0.87, 0.5),
-                       fontsize=10, frameon=False)
-
-        pdf.savefig(fig)
+        plt.savefig(outname)
         plt.close(fig)
 
-    print("Saved:", out)
-
-def heatmaps_mean_mode(run_file, grid, label, xlim, outdir, apply_shift_flag):
-    """
-    Separate heatmap PDF (2 pages: mean + mode). No overlay here.
-    """
-    out = os.path.join(outdir, f"HEATMAP_{label}_mean_mode.pdf")
-
+def heatmap(root_file, grid, shifts, outname, quantity, apply_shift):
     nrows = len(grid)
     ncols = max(len(r) for r in grid)
+    mat = np.full((nrows,ncols), np.nan)
 
-    means = np.full((nrows, ncols), np.nan, dtype=float)
-    modes = np.full((nrows, ncols), np.nan, dtype=float)
+    bins = np.linspace(*XLIM, NBINS+1)
 
-    bins = np.linspace(xlim[0], xlim[1], NBINS + 1)
-
-    with uproot.open(run_file) as f:
+    with uproot.open(root_file) as f:
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        for r in range(nrows):
-            row = grid[r]
-            for c in range(ncols):
-                if c >= len(row) or row[c] is None:
+        for r,row in enumerate(grid):
+            for c,code in enumerate(row):
+                if code is None:
                     continue
-                code = row[c]
-                b, g, ch = _parse_code(code)
-                if not _base_ok(g, ch):
-                    continue
-                k = _branch(b, g, ch)
+                b,g,ch = parse_code(code)
+                k = branch_name(b,g,ch)
                 if k not in keys:
                     continue
-                raw = tree[k].array(library="np")
-                arr_abs = _prep_abs(np.abs(raw), xlim)
-                if arr_abs is None:
+
+                arr = prep_array(tree[k].array(library="np"))
+                if arr is None:
                     continue
-                arr_abs = _apply_shift(arr_abs, b, g, ch, apply_shift_flag)
-                means[r, c] = float(arr_abs.mean())
-                mode, _ = _mode_and_hist(arr_abs, bins=bins)
-                modes[r, c] = float(mode)
 
-    with PdfPages(out) as pdf:
-        for mat, title, cbar_label in [
-            (means, f"{label} mean(|tfinal|)", "Mean(|tfinal|) [ns]"),
-            (modes, f"{label} mode(|tfinal|)", "Mode(|tfinal|) [ns]"),
-        ]:
-            fig, ax = plt.subplots(1, 1, figsize=(12.5, 0.65 * nrows + 1.2))
-            im = ax.imshow(mat, origin="upper", aspect="auto", cmap=HEATMAP_CMAP)
+                if apply_shift:
+                    arr = arr + shifts.get((b,g,ch),0.0)
 
-            for rr in range(nrows):
-                row = grid[rr]
-                for cc in range(ncols):
-                    if cc >= len(row) or row[cc] is None:
-                        continue
-                    code = row[cc]
-                    val = mat[rr, cc]
-                    txt = f"{code}\n{val:.2f}" if np.isfinite(val) else f"{code}\n—"
-                    ax.text(cc, rr, txt, ha="center", va="center", fontsize=8)
+                mu, mode, _ = hist_stats(arr, bins)
+                mat[r,c] = mu if quantity=="mean" else mode
 
-            ax.set_xticks(range(ncols))
-            ax.set_yticks(range(nrows))
-            ax.set_xticklabels([""] * ncols)
-            ax.set_yticklabels([""] * nrows)
-            ax.tick_params(length=0)
-            cbar = fig.colorbar(im, ax=ax)
-            cbar.set_label(cbar_label)
-            ax.set_title(title)
-            fig.subplots_adjust(left=0.03, right=0.90, top=0.90, bottom=0.05)
-            pdf.savefig(fig)
-            plt.close(fig)
+    fig,ax = plt.subplots(figsize=(10,0.7*nrows+1))
+    im = ax.imshow(mat,aspect="auto")
+    for r in range(nrows):
+        for c in range(ncols):
+            if np.isfinite(mat[r,c]):
+                ax.text(c,r,f"{mat[r,c]:.2f}",ha="center",va="center",fontsize=8)
+    fig.colorbar(im,label=quantity)
+    ax.set_title(outname)
+    plt.savefig(outname)
+    plt.close(fig)
 
-    print("Saved:", out)
-
-# ================= MAIN PIPELINE =================
-def save_calibration_tables(reference_file, xlim, outdir):
-    """
-    Save per-channel means used for calibration (and shifts) from reference file.
-    """
-    runlab = _infer_run_label(reference_file)
-
-    entries = []
-    for group_name, grid in [("CER-Quartz", QUARTZ_GRID), ("CER-Plastic", PLASTIC_GRID), ("SCI", SCI_ALL_GRID)]:
-        stats_map = QC_STATS.get(group_name, {})
-        target = TARGETS.get(group_name, np.nan)
-        anchor_code = (ANCHORS.get(group_name) or {}).get("anchor_code", "")
-        for code in _grid_codes(grid):
-            b, g, ch = _parse_code(code)
-            if not _base_ok(g, ch):
-                continue
-            st = stats_map.get((b, g, ch), {"ok": False})
-            entries.append(_calib_entry(code, b, g, ch, _branch(b, g, ch), group_name, st, target, anchor_code))
-
-    meta = {
-        "reference_file": reference_file,
-        "reference_run_label": runlab,
-        "xlim": {"xmin": xlim[0], "xmax": xlim[1]},
-        "cuts": {"cut_min": CUT_MIN, "min_entries": MIN_ENTRIES, "min_raw": MIN_RAW},
-        "qc": {"min_good_n": QC_MIN_GOOD_N, "min_peak": QC_MIN_PEAK, "min_prom": QC_MIN_PROM, "max_sigma": QC_MAX_SIGMA},
-        "targets": {k: (float(v) if np.isfinite(v) else None) for k, v in TARGETS.items()},
-        "anchors": ANCHORS,
-        "notes": "target_mean_abs is mean(|tfinal|) of the GOOD channel with the most events (anchor). shift_abs = target - mean_abs(channel).",
-    }
-
-    _write_calibration_json(entries, os.path.join(outdir, f"calibration_{runlab}.json"), meta=meta)
-    _write_calibration_csv(entries, os.path.join(outdir, f"calibration_{runlab}.csv"))
-
-def run_all_for_file(run_file, xlim, outdir, tag, apply_post_shift, do_heatmaps):
-    runlab = _infer_run_label(run_file)
-    base = _mkdir(os.path.join(outdir, f"{tag}_{runlab}"))
-
-    # overlays (pre vs post) mosaics
-    mosaic_overlay_pre_post(run_file, QUARTZ_GRID,  f"{tag}_CER-Quartz",      xlim, base, apply_post_shift)
-    mosaic_overlay_pre_post(run_file, PLASTIC_GRID, f"{tag}_CER-Plastic",     xlim, base, apply_post_shift)
-    mosaic_overlay_pre_post(run_file, CER_ALL_GRID, f"{tag}_CER-AllChannels", xlim, base, apply_post_shift)
-    mosaic_overlay_pre_post(run_file, SCI_ALL_GRID, f"{tag}_SCI-AllChannels", xlim, base, apply_post_shift)
-
-    # heatmaps separate
-    if do_heatmaps:
-        heatmaps_mean_mode(run_file, QUARTZ_GRID,  f"{tag}_CER-Quartz",      xlim, base, apply_post_shift)
-        heatmaps_mean_mode(run_file, PLASTIC_GRID, f"{tag}_CER-Plastic",     xlim, base, apply_post_shift)
-        heatmaps_mean_mode(run_file, CER_ALL_GRID, f"{tag}_CER-AllChannels", xlim, base, apply_post_shift)
-        heatmaps_mean_mode(run_file, SCI_ALL_GRID, f"{tag}_SCI-AllChannels", xlim, base, apply_post_shift)
-
+# ================= MAIN =================
 def main():
-    global TREE_NAME, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW
-    global HSPACE, WSPACE, DO_ALIGN
-    global QC_MIN_GOOD_N, QC_MIN_PEAK, QC_MIN_PROM, QC_MAX_SIGMA
-
     ap = argparse.ArgumentParser()
-    ap.add_argument("--reference-file", required=True,
-                    help="Reference run ROOT file (derive shifts), e.g. run1501_250928105227_*.root")
-    ap.add_argument("--test-files", nargs="+", required=True,
-                    help="Test run ROOT files, e.g. run1511_..., run1507_...")
-
-    ap.add_argument("--tree", default=TREE_NAME)
-    ap.add_argument("--xmin", type=float, default=7.0)
-    ap.add_argument("--xmax", type=float, default=14.0)
-    ap.add_argument("--nbins", type=int, default=NBINS)
-    ap.add_argument("--cut-min", type=float, default=CUT_MIN)
-    ap.add_argument("--min-entries", type=int, default=MIN_ENTRIES)
-    ap.add_argument("--min-raw", type=int, default=MIN_RAW)
-    ap.add_argument("--hspace", type=float, default=HSPACE)
-    ap.add_argument("--wspace", type=float, default=WSPACE)
-
-    ap.add_argument("--qc-min-good-n", type=int, default=QC_MIN_GOOD_N)
-    ap.add_argument("--qc-min-peak", type=float, default=QC_MIN_PEAK)
-    ap.add_argument("--qc-min-prom", type=float, default=QC_MIN_PROM)
-    ap.add_argument("--qc-max-sigma", type=float, default=QC_MAX_SIGMA)
-
-    ap.add_argument("--no-align", action="store_true", help="Do not apply shifts in POST overlays (still computes shifts).")
-    ap.add_argument("--no-heatmaps", action="store_true", help="Skip heatmap PDFs (mosaic overlays still produced).")
-
-    ap.add_argument("--outdir", default="./TRUE-HGtiming/calibration_anchorMaxN",
-                    help="Base output directory")
-
+    ap.add_argument("--reference",default= '/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1501_250928105227_converted_timingskim.root' )
+    ap.add_argument("--test", default = '/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1511_250928180741_converted_timingskim.root')
+    ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/calibration_studiesZ/MODE_CALIB_OUTPUT")
     args = ap.parse_args()
 
-    TREE_NAME = args.tree
-    NBINS = args.nbins
-    CUT_MIN = args.cut_min
-    MIN_ENTRIES = args.min_entries
-    MIN_RAW = args.min_raw
-    HSPACE = args.hspace
-    WSPACE = args.wspace
+    os.makedirs(args.outdir, exist_ok=True)
 
-    QC_MIN_GOOD_N = args.qc_min_good_n
-    QC_MIN_PEAK = args.qc_min_peak
-    QC_MIN_PROM = args.qc_min_prom
-    QC_MAX_SIGMA = args.qc_max_sigma
+    calibrations = {}
 
-    DO_ALIGN = (not args.no_align)
-    do_heatmaps = (not args.no_heatmaps)
+    for fam,grid in FAMILIES.items():
+        shifts, anchor, stats = derive_family_calibration(args.reference, grid)
+        calibrations[fam] = shifts
+        print(f"[{fam}] anchor={anchor[0]}  μ={anchor[1]['mu']:.4f}")
 
-    xlim = (args.xmin, args.xmax)
-    _mkdir(args.outdir)
+        # Reference run
+        mosaic_pre_post(
+            args.reference, grid, shifts,
+            f"{args.outdir}/MOSAIC_{fam}_REF_PRE_POST.pdf",
+            f"{fam} — Reference"
+        )
 
-    # 1) build reference shifts using anchor=channel with most events
-    build_reference_shifts(args.reference_file, xlim)
+        # Test run
+        mosaic_pre_post(
+            args.test, grid, shifts,
+            f"{args.outdir}/MOSAIC_{fam}_TEST_PRE_POST.pdf",
+            f"{fam} — Test"
+        )
 
-    print("\n[Anchors]")
-    for g in ["CER-Quartz", "CER-Plastic", "SCI"]:
-        a = ANCHORS.get(g)
-        if a is None:
-            print(f"  {g}: NONE (no good channels)")
-        else:
-            print(f"  {g}: anchor={a['anchor_code']}  N={a['anchor_N']}  mean={a['anchor_mean_abs']:.4f} ns")
+        for qty in ["mean","mode"]:
+            heatmap(args.reference, grid, shifts,
+                    f"{args.outdir}/HEATMAP_{fam}_REF_{qty}_PRE.pdf",
+                    qty, apply_shift=False)
+            heatmap(args.reference, grid, shifts,
+                    f"{args.outdir}/HEATMAP_{fam}_REF_{qty}_POST.pdf",
+                    qty, apply_shift=True)
 
-    # 2) save per-channel means/shifts used for calibration
-    ref_label = _infer_run_label(args.reference_file)
-    ref_dir = _mkdir(os.path.join(args.outdir, f"REFERENCE_{ref_label}"))
-    save_calibration_tables(args.reference_file, xlim, ref_dir)
-
-    # 3) overlays for reference run (pre vs post using its own shifts)
-    run_all_for_file(args.reference_file, xlim, args.outdir,
-                     tag="REFERENCE_PRE_vs_POST", apply_post_shift=DO_ALIGN, do_heatmaps=do_heatmaps)
-
-    # 4) overlays for test runs (pre vs post using reference shifts)
-    for tf in args.test_files:
-        run_all_for_file(tf, xlim, args.outdir,
-                         tag=f"TEST_PRE_vs_POST_using_{ref_label}", apply_post_shift=DO_ALIGN, do_heatmaps=do_heatmaps)
-
-    print("\nAll done.")
+            heatmap(args.test, grid, shifts,
+                    f"{args.outdir}/HEATMAP_{fam}_TEST_{qty}_PRE.pdf",
+                    qty, apply_shift=False)
+            heatmap(args.test, grid, shifts,
+                    f"{args.outdir}/HEATMAP_{fam}_TEST_{qty}_POST.pdf",
+                    qty, apply_shift=True)
 
 if __name__ == "__main__":
     main()
