@@ -294,6 +294,15 @@ def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
                 ln2, = ax.step(centers, h_post, where="mid", lw=1.4, alpha=0.95)
                 ax.set_title(code, fontsize=9, pad=2)
 
+                # --- Mean lines (green, dashed)
+                ax.axvline(mu_pre,  color="green", linestyle="--", linewidth=1.2, alpha=0.65)
+                ax.axvline(mu_post, color="green", linestyle="--", linewidth=1.6, alpha=0.90)
+
+                # --- Mode lines (purple, dashed)
+                ax.axvline(mode_pre,  color="purple", linestyle="--", linewidth=1.2, alpha=0.65)
+                ax.axvline(mode_post, color="purple", linestyle="--", linewidth=1.6, alpha=0.90)
+
+
                 txt = (f"μpre={mu_pre:.2f}\nμpost={mu_post:.2f}\n"
                        f"mpre={mode_pre:.2f}\nmpost={mode_post:.2f}")
                 ax.text(0.02, 0.98, txt, transform=ax.transAxes,
