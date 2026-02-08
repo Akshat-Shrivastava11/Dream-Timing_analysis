@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env python3
 import os
 import re
@@ -8,16 +6,18 @@ import numpy as np
 import uproot
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from scipy.optimize import curve_fit
 
 # ================= CONFIG =================
 TREE_NAME = "EventTree"
 NBINS = 200
-XLIM = (7.0, 14.0)
+
+# requested
+XLIM = (8.0, 15.0)
 
 MIN_RAW = 500
 MIN_ENTRIES = 200
 
-# ================= GRIDS =================
 # ================= GRIDS =================
 QUARTZ_GRID = [
     [None,"002",None,None],
@@ -62,13 +62,46 @@ SCI_GRID = [
     [None,"135",None,"335"],
 ]
 
+# All CER channels (Quartz + Plastic)
+CER_ALL_GRID = [
+    ["002", "000", "202", "200"],
+    ["006", "004", "206", "204"],
+    ["012", "010", "212", "210"],
+    ["016", "014", "216", "214"],
+    ["022", "020", "222", "220"],
+    ["026", "024", "226", "224"],
+    ["032", "030", "232", "230"],
+    [None,  "034", None,  "234"],
+    ["102", "100", "302", "300"],
+    ["106", "104", "306", "304"],
+    ["112", "110", "312", "310"],
+    ["116", "114", "316", "314"],
+    ["122", "120", "322", "320"],
+    ["126", "124", "326", "324"],
+    ["132", "130", "332", "330"],
+    [None,  "134", None,  "334"],
+]
+
 FAMILIES = {
     "CER-Quartz": QUARTZ_GRID,
     "CER-Plastic": PLASTIC_GRID,
     "SCI": SCI_GRID,
+    "CER-All": CER_ALL_GRID,
+}
+
+# Provided anchors
+ANCHORS = {
+    "SCI": (1, 0, 7),
+    "CER-Quartz": (1, 0, 4),
+    "CER-Plastic": (1, 0, 0),
 }
 
 # ================= HELPERS =================
+def _infer_run_label(path: str) -> str:
+    base = os.path.basename(path)
+    m = re.search(r"(run\d+_\d{11,12})", base)
+    return m.group(1) if m else os.path.splitext(base)[0]
+
 def parse_code(code):
     return int(code[0]), int(code[1]), int(code[2])
 
@@ -87,50 +120,49 @@ def hist_stats(arr, bins):
     h, edges = np.histogram(arr, bins=bins)
     if h.sum() == 0:
         return None
-    mu = arr.mean()
-    mode = 0.5 * (edges[np.argmax(h)] + edges[np.argmax(h)+1])
+    mu = float(arr.mean())
+    mode = float(0.5 * (edges[np.argmax(h)] + edges[np.argmax(h)+1]))
     return mu, mode, h
 
-from scipy.optimize import curve_fit
+# ================= GAUSS FIT (anchor mean) =================
+def _gauss(x, A, mu, sig):
+    return A * np.exp(-0.5 * ((x - mu) / sig)**2)
 
-def gaussian(x, A, mu, sigma):
-    return A * np.exp(-(x - mu)**2 / (2 * sigma**2))
-
-
-def gaussian_peak_mean(arr, bins, window=0.4):
-    """
-    Fit a Gaussian to the peak of |tfinal| and return the fitted mean.
-    Falls back to simple mean if fit fails.
-    """
-    h, edges = np.histogram(arr, bins=bins)
+def fit_gaussian_to_peak(arr_abs, bins, window=0.5):
+    h, edges = np.histogram(arr_abs, bins=bins)
     centers = 0.5 * (edges[1:] + edges[:-1])
+    if h.sum() == 0:
+        return False, np.nan, np.nan, np.nan
 
-    imax = np.argmax(h)
-    x_peak = centers[imax]
+    imax = int(np.argmax(h))
+    x0 = float(centers[imax])
 
-    mask = (centers > x_peak - window) & (centers < x_peak + window)
-    x_fit = centers[mask]
-    y_fit = h[mask]
+    m = (centers >= x0 - window) & (centers <= x0 + window)
+    x = centers[m]
+    y = h[m]
 
-    if len(x_fit) < 5:
-        return arr.mean()  # fallback
+    if x.size < 6 or y.max() < 5:
+        return False, np.nan, np.nan, np.nan
+
+    p0 = [float(y.max()), x0, 0.15]
+    bounds = ([0.0, x0 - window, 0.02], [np.inf, x0 + window, 2.0])
 
     try:
-        p0 = [y_fit.max(), x_peak, 0.15]
-        popt, _ = curve_fit(gaussian, x_fit, y_fit, p0=p0)
-        mu_fit = popt[1]
-        return float(mu_fit)
-    except RuntimeError:
-        return arr.mean()
+        popt, _ = curve_fit(_gauss, x, y, p0=p0, bounds=bounds, maxfev=10000)
+        A, mu, sig = map(float, popt)
+        return True, mu, sig, A
+    except Exception:
+        return False, np.nan, np.nan, np.nan
 
-
-
-
-# ================= CALIBRATION =================
-def derive_family_calibration(root_file, grid):
-    bins = np.linspace(*XLIM, NBINS+1)
+# ================= CALIBRATION (fixed anchor per family) =================
+def derive_family_calibration_fixed_anchor(root_file, grid, anchor_key):
+    """
+    shift(channel) = mu_anchor_fit - mean(channel)
+    anchor mean derived from Gaussian fit around peak (fallback to mean).
+    """
+    bins = np.linspace(*XLIM, NBINS + 1)
     stats = {}
-    arrays = {}   # <-- ADD THIS
+    arrays = {}
 
     with uproot.open(root_file) as f:
         tree = f[TREE_NAME]
@@ -154,37 +186,38 @@ def derive_family_calibration(root_file, grid):
                 if arr is None:
                     continue
 
-                # store the array so we can fit the anchor later
-                arrays[(b, g, c)] = arr   # <-- ADD THIS
+                arrays[(b, g, c)] = arr
 
-                # whatever stats you compute per channel
-                mu = float(arr.mean())
-                h, edges = np.histogram(arr, bins=bins)
-                mode = float(0.5 * (edges[np.argmax(h)] + edges[np.argmax(h)+1])) if h.sum() else np.nan
+                hstats = hist_stats(arr, bins)
+                if hstats is None:
+                    continue
+                mu, mode, _ = hstats
 
-                stats[(b, g, c)] = {"N": int(arr.size), "mu": mu, "mode": mode}
+                stats[(b, g, c)] = {"N": int(arr.size), "mu": float(mu), "mode": float(mode)}
 
-    if not stats:
-        raise RuntimeError("No usable channels found for this family/grid.")
+    if anchor_key not in arrays or anchor_key not in stats:
+        raise RuntimeError(f"Anchor {anchor_key} not usable/found in this family for {root_file}")
 
-    # pick anchor by max N
-    anchor_key, anchor_stats = max(stats.items(), key=lambda x: x[1]["N"])
-
-    # define anchor_array properly (THIS FIXES YOUR ERROR)
-    anchor_array = arrays[anchor_key]
-    anchor_mu = gaussian_peak_mean(anchor_array, bins)
+    anchor_arr = arrays[anchor_key]
+    fit_ok, mu_fit, sig_fit, _A = fit_gaussian_to_peak(anchor_arr, bins, window=0.5)
+    anchor_mu = float(mu_fit) if (fit_ok and np.isfinite(mu_fit)) else float(stats[anchor_key]["mu"])
 
     shifts = {}
     for key, st in stats.items():
         shifts[key] = float(anchor_mu - st["mu"])
 
-    return shifts, (anchor_key, {"mu": anchor_mu, "N": anchor_stats["N"]}), stats
-
+    anchor_info = {
+        "mu": anchor_mu,
+        "N": int(stats[anchor_key]["N"]),
+        "fit_ok": bool(fit_ok),
+        "sig_fit": float(sig_fit) if np.isfinite(sig_fit) else np.nan,
+    }
+    return shifts, (anchor_key, anchor_info), stats
 
 # ================= PLOTTING =================
-def mosaic_pre_post(root_file, grid, shifts, outname, title):
-    bins = np.linspace(*XLIM, NBINS+1)
-    centers = 0.5*(bins[1:] + bins[:-1])
+def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
+    bins = np.linspace(*XLIM, NBINS + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
 
     nrows = len(grid)
     ncols = max(len(r) for r in grid)
@@ -193,68 +226,117 @@ def mosaic_pre_post(root_file, grid, shifts, outname, title):
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        fig, axes = plt.subplots(nrows, ncols, figsize=(12, 2.2*nrows), sharex=True, sharey=True)
+        fig, axes = plt.subplots(nrows, ncols, figsize=(12, 2.2 * nrows), sharex=True, sharey=True)
         axes = np.atleast_2d(axes)
 
-        for r,row in enumerate(grid):
-            for c,code in enumerate(row):
-                ax = axes[r,c]
+        # compute global ymax
+        global_ymax = 1
+        cache = {}
+        for r, row in enumerate(grid):
+            for c, code in enumerate(row):
                 if code is None:
-                    ax.axis("off")
+                    cache[(r, c)] = None
                     continue
-
-                b,g,ch = parse_code(code)
-                k = branch_name(b,g,ch)
+                b, g, ch = parse_code(code)
+                k = branch_name(b, g, ch)
                 if k not in keys:
-                    ax.text(0.5,0.5,"missing",ha="center",va="center")
+                    cache[(r, c)] = ("missing", code)
                     continue
 
                 raw = prep_array(tree[k].array(library="np"))
                 if raw is None:
-                    ax.text(0.5,0.5,"nostats",ha="center",va="center")
+                    cache[(r, c)] = ("nostats", code)
                     continue
 
-                mu_pre, _, h_pre = hist_stats(raw, bins)
-                post = raw + shifts.get((b,g,ch), 0.0)
-                mu_post, _, h_post = hist_stats(post, bins)
+                pre_stats = hist_stats(raw, bins)
+                if pre_stats is None:
+                    cache[(r, c)] = ("nostats", code)
+                    continue
+                mu_pre, mode_pre, h_pre = pre_stats
 
-                ax.step(centers, h_pre, where="mid", label="PRE", lw=1)
-                ax.step(centers, h_post, where="mid", label="POST", lw=1.5)
-                ax.set_title(code, fontsize=9)
-                ax.text(0.02,0.95,
-                        f"μpre={mu_pre:.2f}\nμpost={mu_post:.2f}",
-                        transform=ax.transAxes,
-                        va="top",fontsize=8)
+                post = raw + shifts.get((b, g, ch), 0.0)
+                post_stats = hist_stats(post, bins)
+                if post_stats is None:
+                    cache[(r, c)] = ("nostats", code)
+                    continue
+                mu_post, mode_post, h_post = post_stats
 
-        fig.suptitle(title)
-        fig.text(0.04,0.5,"Events",rotation=90,va="center")
-        for ax in axes[-1]:
-            ax.set_xlabel("|tfinal| [ns]")
+                global_ymax = max(global_ymax, int(h_pre.max()), int(h_post.max()))
+                cache[(r, c)] = ("ok", code, mu_pre, mu_post, mode_pre, mode_post, h_pre, h_post)
 
-        handles, labels = axes[0,0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc="upper right")
-        fig.tight_layout(rect=[0.04,0.03,0.98,0.95])
+        # draw
+        for r, row in enumerate(grid):
+            for c, code in enumerate(row):
+                ax = axes[r, c]
+                if code is None:
+                    ax.axis("off")
+                    continue
 
-        plt.savefig(outname)
+                ax.set_xlim(*XLIM)
+                ax.set_yscale("log")
+                ax.set_ylim(1, global_ymax * 1.15)
+                ax.tick_params(labelsize=8, direction="in", top=True, right=True)
+
+                entry = cache.get((r, c))
+                if entry is None:
+                    ax.axis("off")
+                    continue
+
+                status = entry[0]
+                if status != "ok":
+                    ax.text(0.5, 0.5, f"{entry[1]}\n({status})", ha="center", va="center",
+                            transform=ax.transAxes, fontsize=9)
+                    continue
+
+                _, code, mu_pre, mu_post, mode_pre, mode_post, h_pre, h_post = entry
+
+                ln1, = ax.step(centers, h_pre, where="mid", lw=1.0, alpha=0.70)
+                ln2, = ax.step(centers, h_post, where="mid", lw=1.4, alpha=0.95)
+                ax.set_title(code, fontsize=9, pad=2)
+
+                txt = (f"μpre={mu_pre:.2f}\nμpost={mu_post:.2f}\n"
+                       f"mpre={mode_pre:.2f}\nmpost={mode_post:.2f}")
+                ax.text(0.02, 0.98, txt, transform=ax.transAxes,
+                        ha="left", va="top", fontsize=7,
+                        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.75, edgecolor="none"))
+
+        # labels
+        for ax in axes[-1, :]:
+            if ax.axison and ax.get_visible():
+                ax.set_xlabel(r"$|t_{\mathrm{final}}|$ [ns]")
+
+        fig.text(0.01, 0.5, "Events", va="center", rotation=90)
+        fig.suptitle(title, fontsize=14)
+        fig.legend([ln1, ln2], ["PRE (raw)", "POST (shifted)"],
+                   loc="center left", bbox_to_anchor=(0.86, 0.5),
+                   fontsize=10, frameon=False)
+
+        fig.subplots_adjust(left=0.05, right=0.84, top=0.94, bottom=0.05, hspace=0.12, wspace=0.05)
+        pdf.savefig(fig)
         plt.close(fig)
 
-def heatmap(root_file, grid, shifts, outname, quantity, apply_shift):
+def heatmap_to_pdf(pdf, root_file, grid, shifts, quantity, apply_shift, title):
+    """
+    Heatmap cell value = time of arrival (mean or mode) in ns.
+    quantity: "mean" or "mode"
+    apply_shift: False => PRE, True => POST
+    """
     nrows = len(grid)
     ncols = max(len(r) for r in grid)
-    mat = np.full((nrows,ncols), np.nan)
+    mat = np.full((nrows, ncols), np.nan, dtype=float)
 
-    bins = np.linspace(*XLIM, NBINS+1)
+    bins = np.linspace(*XLIM, NBINS + 1)
 
     with uproot.open(root_file) as f:
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        for r,row in enumerate(grid):
-            for c,code in enumerate(row):
+        for r, row in enumerate(grid):
+            for c, code in enumerate(row):
                 if code is None:
                     continue
-                b,g,ch = parse_code(code)
-                k = branch_name(b,g,ch)
+                b, g, ch = parse_code(code)
+                k = branch_name(b, g, ch)
                 if k not in keys:
                     continue
 
@@ -263,67 +345,110 @@ def heatmap(root_file, grid, shifts, outname, quantity, apply_shift):
                     continue
 
                 if apply_shift:
-                    arr = arr + shifts.get((b,g,ch),0.0)
+                    arr = arr + shifts.get((b, g, ch), 0.0)
 
-                mu, mode, _ = hist_stats(arr, bins)
-                mat[r,c] = mu if quantity=="mean" else mode
+                st = hist_stats(arr, bins)
+                if st is None:
+                    continue
+                mu, mode, _h = st
+                mat[r, c] = mu if quantity == "mean" else mode
 
-    fig,ax = plt.subplots(figsize=(10,0.7*nrows+1))
-    im = ax.imshow(mat,aspect="auto")
-    for r in range(nrows):
-        for c in range(ncols):
-            if np.isfinite(mat[r,c]):
-                ax.text(c,r,f"{mat[r,c]:.2f}",ha="center",va="center",fontsize=8)
-    fig.colorbar(im,label=quantity)
-    ax.set_title(outname)
-    plt.savefig(outname)
+    # consistent color scale between PRE/POST per plot type:
+    vmin, vmax = XLIM
+
+    fig, ax = plt.subplots(figsize=(12, 0.65 * nrows + 1.2))
+    im = ax.imshow(mat, origin="upper", aspect="auto", vmin=vmin, vmax=vmax)
+
+    for rr in range(nrows):
+        for cc in range(ncols):
+            if cc >= len(grid[rr]) or grid[rr][cc] is None:
+                continue
+            code = grid[rr][cc]
+            val = mat[rr, cc]
+            txt = f"{code}\n{val:.2f}" if np.isfinite(val) else f"{code}\n—"
+            ax.text(cc, rr, txt, ha="center", va="center", fontsize=8)
+
+    ax.set_xticks(range(ncols))
+    ax.set_yticks(range(nrows))
+    ax.set_xticklabels([""] * ncols)
+    ax.set_yticklabels([""] * nrows)
+    ax.tick_params(length=0)
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label(f"{quantity}(|tfinal|) [ns]")
+    ax.set_title(title)
+    fig.subplots_adjust(left=0.03, right=0.90, top=0.90, bottom=0.05)
+
+    pdf.savefig(fig)
     plt.close(fig)
 
 # ================= MAIN =================
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--reference",default= '/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1501_250928105227_converted_timingskim.root' )
-    ap.add_argument("--test", default = '/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1511_250928180741_converted_timingskim.root')
+    ap.add_argument("--reference", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1501_250928105227_converted_timingskim.root")
+    ap.add_argument("--test", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1511_250928180741_converted_timingskim.root")
     ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/calibration_studiesZ/MODE_CALIB_OUTPUT")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
 
-    calibrations = {}
+    ref_label = _infer_run_label(args.reference)
+    test_label = _infer_run_label(args.test)
 
-    for fam,grid in FAMILIES.items():
-        shifts, anchor, stats = derive_family_calibration(args.reference, grid)
-        calibrations[fam] = shifts
-        print(f"[{fam}] anchor={anchor[0]}  μ={anchor[1]['mu']:.4f}")
+    ref_pdf_path = os.path.join(args.outdir, f"REF_file_{ref_label}.pdf")
+    test_pdf_path = os.path.join(args.outdir, f"TEST_file_{test_label}.pdf")
 
-        # Reference run
-        mosaic_pre_post(
-            args.reference, grid, shifts,
-            f"{args.outdir}/MOSAIC_{fam}_REF_PRE_POST.pdf",
-            f"{fam} — Reference"
-        )
+    # --- Derive shifts from reference using fixed anchors per calibration family
+    shifts_by_family = {}
+    anchor_info = {}
 
-        # Test run
-        mosaic_pre_post(
-            args.test, grid, shifts,
-            f"{args.outdir}/MOSAIC_{fam}_TEST_PRE_POST.pdf",
-            f"{fam} — Test"
-        )
+    for fam in ["CER-Quartz", "CER-Plastic", "SCI"]:
+        grid = FAMILIES[fam]
+        anchor_key = ANCHORS[fam]
+        shifts, anchor, stats = derive_family_calibration_fixed_anchor(args.reference, grid, anchor_key)
+        shifts_by_family[fam] = shifts
+        anchor_info[fam] = anchor
+        akey, ainfo = anchor
+        print(f"[{fam}] anchor={akey}  mu={ainfo['mu']:.4f}  N={ainfo['N']}  fit_ok={ainfo['fit_ok']}  sig_fit={ainfo['sig_fit']:.3f}")
 
-        for qty in ["mean","mode"]:
-            heatmap(args.reference, grid, shifts,
-                    f"{args.outdir}/HEATMAP_{fam}_REF_{qty}_PRE.pdf",
-                    qty, apply_shift=False)
-            heatmap(args.reference, grid, shifts,
-                    f"{args.outdir}/HEATMAP_{fam}_REF_{qty}_POST.pdf",
-                    qty, apply_shift=True)
+    # CER-All shifts = Quartz + Plastic shifts
+    shifts_cer_all = {}
+    shifts_cer_all.update(shifts_by_family["CER-Quartz"])
+    shifts_cer_all.update(shifts_by_family["CER-Plastic"])
+    shifts_by_family["CER-All"] = shifts_cer_all
 
-            heatmap(args.test, grid, shifts,
-                    f"{args.outdir}/HEATMAP_{fam}_TEST_{qty}_PRE.pdf",
-                    qty, apply_shift=False)
-            heatmap(args.test, grid, shifts,
-                    f"{args.outdir}/HEATMAP_{fam}_TEST_{qty}_POST.pdf",
-                    qty, apply_shift=True)
+    # helper to dump pages for a file
+    def write_all_pages(pdf, root_file, tag):
+        for fam in ["CER-Quartz", "CER-Plastic", "SCI", "CER-All"]:
+            grid = FAMILIES[fam]
+            shifts = shifts_by_family[fam]
+
+            mosaic_pre_post_to_pdf(
+                pdf, root_file, grid, shifts,
+                title=f"{tag} — {fam} mosaic PRE vs POST"
+            )
+
+            for qty in ["mean", "mode"]:
+                heatmap_to_pdf(
+                    pdf, root_file, grid, shifts,
+                    quantity=qty, apply_shift=False,
+                    title=f"{tag} — {fam} heatmap {qty} PRE"
+                )
+                heatmap_to_pdf(
+                    pdf, root_file, grid, shifts,
+                    quantity=qty, apply_shift=True,
+                    title=f"{tag} — {fam} heatmap {qty} POST"
+                )
+
+    # --- Build REF pdf (all pages)
+    with PdfPages(ref_pdf_path) as pdf:
+        write_all_pages(pdf, args.reference, tag=f"REFERENCE {ref_label}")
+
+    # --- Build TEST pdf (all pages) using SAME shifts derived from reference
+    with PdfPages(test_pdf_path) as pdf:
+        write_all_pages(pdf, args.test, tag=f"TEST {test_label} (calib from {ref_label})")
+
+    print("Saved:", ref_pdf_path)
+    print("Saved:", test_pdf_path)
 
 if __name__ == "__main__":
     main()
