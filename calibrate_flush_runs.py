@@ -124,7 +124,7 @@ def hist_stats(arr, bins):
     mode = float(0.5 * (edges[np.argmax(h)] + edges[np.argmax(h)+1]))
     return mu, mode, h
 
-# ================= GAUSS FIT (anchor mean) =================
+# ================= GAUSS FIT (anchor position) =================
 def _gauss(x, A, mu, sig):
     return A * np.exp(-0.5 * ((x - mu) / sig)**2)
 
@@ -155,11 +155,17 @@ def fit_gaussian_to_peak(arr_abs, bins, window=0.5):
         return False, np.nan, np.nan, np.nan
 
 # ================= CALIBRATION (fixed anchor per family) =================
-def derive_family_calibration_fixed_anchor(root_file, grid, anchor_key):
+def derive_family_calibration_fixed_anchor(root_file, grid, anchor_key, calib_stat="mode"):
     """
-    shift(channel) = mu_anchor_fit - mean(channel)
-    anchor mean derived from Gaussian fit around peak (fallback to mean).
+    calib_stat:
+      - "mean": shift = anchor_mu - mean(channel)
+      - "mode": shift = anchor_mu - mode(channel)
+
+    anchor_mu is taken from a Gaussian fit to the ANCHOR peak (fallback to anchor mean).
     """
+    if calib_stat not in ("mean", "mode"):
+        raise ValueError(f"--calib-stat must be 'mean' or 'mode' (got {calib_stat})")
+
     bins = np.linspace(*XLIM, NBINS + 1)
     stats = {}
     arrays = {}
@@ -198,19 +204,23 @@ def derive_family_calibration_fixed_anchor(root_file, grid, anchor_key):
     if anchor_key not in arrays or anchor_key not in stats:
         raise RuntimeError(f"Anchor {anchor_key} not usable/found in this family for {root_file}")
 
+    # Anchor peak position (Gaussian fit)
     anchor_arr = arrays[anchor_key]
     fit_ok, mu_fit, sig_fit, _A = fit_gaussian_to_peak(anchor_arr, bins, window=0.5)
     anchor_mu = float(mu_fit) if (fit_ok and np.isfinite(mu_fit)) else float(stats[anchor_key]["mu"])
 
+    # Compute shifts
     shifts = {}
     for key, st in stats.items():
-        shifts[key] = float(anchor_mu - st["mu"])
+        loc = st["mu"] if calib_stat == "mean" else st["mode"]
+        shifts[key] = float(anchor_mu - float(loc))
 
     anchor_info = {
         "mu": anchor_mu,
         "N": int(stats[anchor_key]["N"]),
         "fit_ok": bool(fit_ok),
         "sig_fit": float(sig_fit) if np.isfinite(sig_fit) else np.nan,
+        "calib_stat": calib_stat,
     }
     return shifts, (anchor_key, anchor_info), stats
 
@@ -294,14 +304,13 @@ def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
                 ln2, = ax.step(centers, h_post, where="mid", lw=1.4, alpha=0.95)
                 ax.set_title(code, fontsize=9, pad=2)
 
-                # --- Mean lines (green, dashed)
+                # Mean lines (green, dashed)
                 ax.axvline(mu_pre,  color="green", linestyle="--", linewidth=1.2, alpha=0.65)
                 ax.axvline(mu_post, color="green", linestyle="--", linewidth=1.6, alpha=0.90)
 
-                # --- Mode lines (purple, dashed)
+                # Mode lines (purple, dashed)
                 ax.axvline(mode_pre,  color="purple", linestyle="--", linewidth=1.2, alpha=0.65)
                 ax.axvline(mode_post, color="purple", linestyle="--", linewidth=1.6, alpha=0.90)
-
 
                 txt = (f"μpre={mu_pre:.2f}\nμpost={mu_post:.2f}\n"
                        f"mpre={mode_pre:.2f}\nmpost={mode_post:.2f}")
@@ -309,7 +318,6 @@ def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
                         ha="left", va="top", fontsize=7,
                         bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.75, edgecolor="none"))
 
-        # labels
         for ax in axes[-1, :]:
             if ax.axison and ax.get_visible():
                 ax.set_xlabel(r"$|t_{\mathrm{final}}|$ [ns]")
@@ -362,7 +370,6 @@ def heatmap_to_pdf(pdf, root_file, grid, shifts, quantity, apply_shift, title):
                 mu, mode, _h = st
                 mat[r, c] = mu if quantity == "mean" else mode
 
-    # consistent color scale between PRE/POST per plot type:
     vmin, vmax = XLIM
 
     fig, ax = plt.subplots(figsize=(12, 0.65 * nrows + 1.2))
@@ -396,6 +403,8 @@ def main():
     ap.add_argument("--reference", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1501_250928105227_converted_timingskim.root")
     ap.add_argument("--test", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1511_250928180741_converted_timingskim.root")
     ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/calibration_studiesZ/MODE_CALIB_OUTPUT")
+    ap.add_argument("--calib-stat", choices=["mean", "mode"], default="mean",
+                    help="Use channel mean or histogram mode when computing shifts (anchor uses Gaussian-fit peak).")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -403,21 +412,21 @@ def main():
     ref_label = _infer_run_label(args.reference)
     test_label = _infer_run_label(args.test)
 
-    ref_pdf_path = os.path.join(args.outdir, f"REF_file_{ref_label}.pdf")
-    test_pdf_path = os.path.join(args.outdir, f"TEST_file_{test_label}.pdf")
+    suffix = f"calib_{args.calib_stat}"
+    ref_pdf_path = os.path.join(args.outdir, f"REF_file_{ref_label}_{suffix}.pdf")
+    test_pdf_path = os.path.join(args.outdir, f"TEST_file_{test_label}_{suffix}.pdf")
 
     # --- Derive shifts from reference using fixed anchors per calibration family
     shifts_by_family = {}
-    anchor_info = {}
-
     for fam in ["CER-Quartz", "CER-Plastic", "SCI"]:
         grid = FAMILIES[fam]
         anchor_key = ANCHORS[fam]
-        shifts, anchor, stats = derive_family_calibration_fixed_anchor(args.reference, grid, anchor_key)
+        shifts, anchor, stats = derive_family_calibration_fixed_anchor(
+            args.reference, grid, anchor_key, calib_stat=args.calib_stat
+        )
         shifts_by_family[fam] = shifts
-        anchor_info[fam] = anchor
         akey, ainfo = anchor
-        print(f"[{fam}] anchor={akey}  mu={ainfo['mu']:.4f}  N={ainfo['N']}  fit_ok={ainfo['fit_ok']}  sig_fit={ainfo['sig_fit']:.3f}")
+        print(f"[{fam}] anchor={akey}  mu={ainfo['mu']:.4f}  N={ainfo['N']}  fit_ok={ainfo['fit_ok']}  sig_fit={ainfo['sig_fit']:.3f}  calib_stat={ainfo['calib_stat']}")
 
     # CER-All shifts = Quartz + Plastic shifts
     shifts_cer_all = {}
@@ -425,36 +434,25 @@ def main():
     shifts_cer_all.update(shifts_by_family["CER-Plastic"])
     shifts_by_family["CER-All"] = shifts_cer_all
 
-    # helper to dump pages for a file
     def write_all_pages(pdf, root_file, tag):
         for fam in ["CER-Quartz", "CER-Plastic", "SCI", "CER-All"]:
             grid = FAMILIES[fam]
             shifts = shifts_by_family[fam]
 
-            mosaic_pre_post_to_pdf(
-                pdf, root_file, grid, shifts,
-                title=f"{tag} — {fam} mosaic PRE vs POST"
-            )
+            mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts,
+                                   title=f"{tag} — {fam} mosaic PRE vs POST")
 
             for qty in ["mean", "mode"]:
-                heatmap_to_pdf(
-                    pdf, root_file, grid, shifts,
-                    quantity=qty, apply_shift=False,
-                    title=f"{tag} — {fam} heatmap {qty} PRE"
-                )
-                heatmap_to_pdf(
-                    pdf, root_file, grid, shifts,
-                    quantity=qty, apply_shift=True,
-                    title=f"{tag} — {fam} heatmap {qty} POST"
-                )
+                heatmap_to_pdf(pdf, root_file, grid, shifts, quantity=qty, apply_shift=False,
+                               title=f"{tag} — {fam} heatmap {qty} PRE")
+                heatmap_to_pdf(pdf, root_file, grid, shifts, quantity=qty, apply_shift=True,
+                               title=f"{tag} — {fam} heatmap {qty} POST")
 
-    # --- Build REF pdf (all pages)
     with PdfPages(ref_pdf_path) as pdf:
-        write_all_pages(pdf, args.reference, tag=f"REFERENCE {ref_label}")
+        write_all_pages(pdf, args.reference, tag=f"REFERENCE {ref_label} ({suffix})")
 
-    # --- Build TEST pdf (all pages) using SAME shifts derived from reference
     with PdfPages(test_pdf_path) as pdf:
-        write_all_pages(pdf, args.test, tag=f"TEST {test_label} (calib from {ref_label})")
+        write_all_pages(pdf, args.test, tag=f"TEST {test_label} (calib from {ref_label}; {suffix})")
 
     print("Saved:", ref_pdf_path)
     print("Saved:", test_pdf_path)
