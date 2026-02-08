@@ -7,7 +7,7 @@ import uproot
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import curve_fit
-
+import json 
 # ================= CONFIG =================
 TREE_NAME = "EventTree"
 NBINS = 200
@@ -97,6 +97,13 @@ ANCHORS = {
 }
 
 # ================= HELPERS =================
+def save_calibration_json(outpath, meta, entries):
+    payload = {"meta": meta, "entries": entries}
+    with open(outpath, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    print("Saved JSON:", outpath)
+
+
 def _infer_run_label(path: str) -> str:
     base = os.path.basename(path)
     m = re.search(r"(run\d+_\d{11,12})", base)
@@ -223,6 +230,9 @@ def derive_family_calibration_fixed_anchor(root_file, grid, anchor_key, calib_st
         "calib_stat": calib_stat,
     }
     return shifts, (anchor_key, anchor_info), stats
+
+
+
 
 # ================= PLOTTING =================
 def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
