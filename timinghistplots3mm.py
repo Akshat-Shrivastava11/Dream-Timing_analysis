@@ -27,33 +27,96 @@ HEATMAP_CMAP = "viridis_r"
 HSPACE = 0.10
 WSPACE = 0.05
 
-# ================= MOSAIC GRIDS =================
+# ================= GRIDS =================
 QUARTZ_GRID = [
-    [None,  "002", None,  None],
-    ["006", "004", "206", "204"],
-    ["016", "014", "216", "214"],
-    ["026", "024", "226", "224"],
-    [None,  "030", None,  None],
-    [None,  "034", None,  None],
-    ["106", "104", "306", "304"],
-    ["116", "114", "316", "314"],
-    ["126", "124", "326", "324"],
-    [None,  "134", None,  "334"],
+    [None,"603","602","601","600",None],
+    [None,"697","606",None,None,None],
+    [None,"613","612","611","610",None],
+    [None,"617","616","615","614",None],
+    [None,"625","624","623","622",None],
+    ["637","631","630","627","626","636"],
+    [None,"635","634","633","632",None],
+    [None,None,"002",None,None,None],
+    [None,"006","004","206","204",None],
+    [None,"016","014","216","214",None],
+    [None,"026","024","226","224",None],
+    [None,None,"030",None,None,None],
+    [None,None,"034",None,None,None],
+    [None,"106","104","306","304",None],
+    [None,"116","114","316","314",None],
+    [None,"126","124","326","324",None],
+    [None,"532","134","536","334",None],
+    [None,"403","402","401","400",None],
+    ["437","407","406","405","404","436"],
+    [None,"413","412","411","410",None],
+    [None,"417","416","415","414",None],
+    [None,"425","424","423","422",None],
+    [None,None,"427","426",None,None],
+    [None,"433","432","431","430",None],
 ]
+
 
 PLASTIC_GRID = [
-    [None,  "000", "202", "200"],
-    ["012", "010", "212", "210"],
-    ["022", "020", "222", "220"],
-    ["032", None,  "232", "230"],
-    ["102", "100", "302", "300"],
-    ["112", "110", "312", "310"],
-    ["122", "120", "322", "320"],
-    ["132", "130", "332", "330"],
+    [None,"603","602","601","600",None],
+    [None,"697","606",None,None,None],
+    [None,"613","612","611","610",None],
+    [None,None,None,None,None,None],
+    [None,None,None,None,None,None],
+    [None,"000","202","200",None,None],
+    [None,"012","010","212","210",None],
+    [None,"022","020","222","220",None],
+    [None,"032",None,"232","230",None],
+    [None,"102","100","302","300",None],
+    [None,"112","110","312","310",None],
+    [None,"122","120","322","320",None],
+    [None,"132","130","332","330",None],
+    [None,None,None,None,None,None],
+    [None,None,None,None,None,None],
+    [None,"425","424","423","422",None],
+    [None,None,"427","426",None,None],
+    [None,"433","432","431","430",None],
 ]
 
-# Combined CER grid you provided
+
+SCI_GRID = [
+    [None,None,"605","604",None,None],
+    [None,None,None,None,None,None],
+    [None,None,"621","620",None,None],
+    [None,None,None,None,None,None],
+    [None,None,None,None,None,None],
+    [None,"003","001","203","201",None],
+    [None,"007","005","207","205",None],
+    [None,"013","011","213","211",None],
+    [None,"017","015","217","215",None],
+    [None,"023","021","223","221",None],
+    [None,"027","025","227","225",None],
+    [None,"033","031","233","231",None],
+    [None,None,"035",None,"235",None],
+    [None,"103","101","303","301",None],
+    [None,"107","105","307","305",None],
+    [None,"113","111","313","311",None],
+    [None,"117","115","317","315",None],
+    [None,"123","121","323","321",None],
+    [None,"127","125","327","325",None],
+    [None,"133","131","333","331",None],
+    [None,"533","135","537","335",None],
+    [None,None,None,None,None,None],
+    [None,None,None,None,None,None],
+    [None,None,"421","420",None,None],
+    [None,None,None,None,None,None],
+    [None,None,"425","434",None,None],
+]
+
+
+# All CER channels (Quartz + Plastic)
 CER_ALL_GRID = [
+    ["603","602","601","600"],
+    [None,"697","606",None],
+    ["613","612","611","610"],
+    ["617","616","615","614"],
+    ["625","624","623","622"],
+["637","631","630","627","626","636"],
+    ["635", "634", "633", "632"],
     ["002", "000", "202", "200"],
     ["006", "004", "206", "204"],
     ["012", "010", "212", "210"],
@@ -69,28 +132,14 @@ CER_ALL_GRID = [
     ["122", "120", "322", "320"],
     ["126", "124", "326", "324"],
     ["132", "130", "332", "330"],
-    [None,  "134", None,  "334"],
-]
-
-# Combined SCI grid you provided (normalized + obvious typo fixes)
-SCI_ALL_GRID = [
-    ["003", "001", "203", "201"],
-    ["007", "005", "207", "205"],
-    ["013", "011", "213", "211"],
-    ["017", "015", "217", "215"],
-    ["023", "021", "223", "221"],
-    ["027", "025", "227", "225"],
-    ["033", "031", "233", "231"],
-    [None,  "035", None,  "235"],
-
-    ["103", "101", "303", "301"],
-    ["107", "105", "307", "305"],
-    ["113", "111", "313", "311"],
-    ["117", "115", "317", "315"],
-    ["123", "121", "323", "321"],
-    ["127", "125", "327", "325"],
-    ["133", "131", "333", "331"],
-    [None,  "135", None,  "335"],
+    ["532", "134", "536",  "334"],
+    ["403","402","401",  "400"],
+["437","407","406","405","404","436"],
+    ["413","412","411","410"],
+    ["417","416","415","414"],
+    ["425","424","423","422"],
+    [None,"427","426",None],
+    ["433","432","431","430"],
 ]
 
 # ================= HELPERS =================
@@ -468,7 +517,7 @@ def main():
     ap.add_argument("--outdir", default=None,
                     help="Output directory. Default: ./TRUE-HGtiming/3mmplots_histonly/<runXXXX>")
     ap.add_argument("--xmin", type=float, default=4.0, help="Min |tfinal| for plots/heatmaps")
-    ap.add_argument("--xmax", type=float, default=20.0, help="Max |tfinal| for plots/heatmaps")
+    ap.add_argument("--xmax", type=float, default=25.0, help="Max |tfinal| for plots/heatmaps")
     ap.add_argument("--nbins", type=int, default=NBINS, help="Histogram bins")
     ap.add_argument("--cut-min", type=float, default=CUT_MIN, help="Ignore |tfinal| < cut-min")
     ap.add_argument("--min-entries", type=int, default=MIN_ENTRIES, help="Min entries after cuts")
