@@ -7,7 +7,8 @@ import uproot
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import curve_fit
-import json 
+import json
+
 # ================= CONFIG =================
 TREE_NAME = "EventTree"
 NBINS = 200
@@ -18,103 +19,31 @@ XLIM = (8.0, 15.0)
 MIN_RAW = 500
 MIN_ENTRIES = 200
 
-# ================= GRIDS =================
 QUARTZ_GRID = [
-    ["603","602","601","600"],
-    [None,"697","606",None],
-    ["613","612","611","610"],
-    ["617,","616","615","614"],
-    ["625","624","623","622"],
-["637","631","630","627","626","636"],
-    ["635","634","633","632"],
-    [None,"002",None,None],
-    ["006","004","206","204"],
-    ["016","014","216","214"],
-    ["026","024","226","224"],
-    [None,"030",None,None],
-    [None,"034",None,None],
-    ["106","104","306","304"],
-    ["116","114","316","314"],
-    ["126","124","326","324"],
-    ["532","134","536","334"],
-    ["403","402","401","400"],
-["437","407","406","405","404","436"],
-    ["413","412","411","410"],
-    ["417","416","415","414"],
-    ["425","424","423","422"],
-    [None,"427","426",None],
-    ["433","432","431","430"],
+    [None,  "002", None,  None],
+    ["006", "004", "206", "204"],
+    ["016", "014", "216", "214"],
+    ["026", "024", "226", "224"],
+    [None,  "030", None,  None],
+    [None,  "034", None,  None],
+    ["106", "104", None, "304"],
+    ["116", "114", "316", "314"],
+    ["126", "124", "326", "324"],
+    [None,  "134", None,  "334"],
 ]
 
 PLASTIC_GRID = [
-    ["603","602","601","600"],
-    [None,"697","606",None],
-    ["613","612","611","610"],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,"000","202","200"],
-    ["012","010","212","210"],
-    ["022","020","222","220"],
-    ["032",None,"232","230"],
-    ["102","100","302","300"],
-    ["112","110","312","310"],
-    ["122","120","322","320"],
-    ["132","130","332","330"],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,None,None,None],
-    ["425","424","423","422"],
-    [None,"427","426",None],
-    ["433","432","431","430"],
+    [None,  "000", "202", "200"],
+    ["012", "010", "212", "210"],
+    ["022", "020", "222", "220"],
+    ["032", None,  "232", "230"],
+    ["102", "100", "302", "300"],
+    ["112", "110", "312", "310"],
+    ["122", "120", "322", "320"],
+    ["132", "130", "332", "330"],
 ]
 
-SCI_GRID = [
-    [None,"605","604",None],
-    [None,None,None,None],
-    [None,"621","620",None],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,None,None,None],
-    ["003","001","203","201"],
-    ["007","005","207","205"],
-    ["013","011","213","211"],
-    ["017","015","217","215"],
-    ["023","021","223","221"],
-    ["027","025","227","225"],
-    ["033","031","233","231"],
-    [None,"035",None,"235"],
-    ["103","101","303","301"],
-    ["107","105","307","305"],
-    ["113","111","313","311"],
-    ["117","115","317","315"],
-    ["123","121","323","321"],
-    ["127","125","327","325"],
-    ["133","131","333","331"],
-    ["533","135","537","335"],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,"421","420",None],
-    [None,None,None,None],
-    [None,None,None,None],
-    [None,"425","434",None],
-
-]
-
-# All CER channels (Quartz + Plastic)
 CER_ALL_GRID = [
-    ["603","602","601","600"],
-    [None,"697","606",None],
-    ["613","612","611","610"],
-    ["617","616","615","614"],
-    ["625","624","623","622"],
-["637","631","630","627","626","636"],
-    ["635", "634", "633", "632"],
     ["002", "000", "202", "200"],
     ["006", "004", "206", "204"],
     ["012", "010", "212", "210"],
@@ -123,21 +52,33 @@ CER_ALL_GRID = [
     ["026", "024", "226", "224"],
     ["032", "030", "232", "230"],
     [None,  "034", None,  "234"],
-    ["102", "100", "302", "300"],
-    ["106", "104", "306", "304"],
-    ["112", "110", "312", "310"],
-    ["116", "114", "316", "314"],
+    ["102", "100", None, "300"],
+    ["106", "104", None, "304"],
+    ["112", "110", None, "310"],
+    ["116", "114", None, "314"],
     ["122", "120", "322", "320"],
     ["126", "124", "326", "324"],
     ["132", "130", "332", "330"],
-    ["532", "134", "536",  "334"],
-    ["403","402","401",  "400"],
-["437","407","406","405","404","436"],
-    ["413","412","411","410"],
-    ["417","416","415","414"],
-    ["425","424","423","422"],
-    [None,"427","426",None],
-    ["433","432","431","430"],
+    [None,  "134", None,  "334"],
+]
+
+SCI_GRID = [
+    ["003", "001", "203", "201"],
+    ["007", "005", "207", "205"],
+    ["013", "011", "213", "211"],
+    ["017", "015", "217", "215"],
+    ["023", "021", "223", "221"],
+    ["027", "025", "227", "225"],
+    ["033", "031", "233", "231"],
+    [None,  "035", None,  "235"],
+    ["103", "101", "303", "301"],
+    ["107", "105", "307", "305"],
+    ["113", "111", "313", "311"],
+    ["117", "115", "317", "315"],
+    ["123", "121", "323", "321"],
+    ["127", "125", "327", "325"],
+    ["133", "131", "333", "331"],
+    [None,  "135", None,  "335"],
 ]
 
 FAMILIES = {
@@ -160,7 +101,6 @@ def save_calibration_json(outpath, meta, entries):
     with open(outpath, "w") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
     print("Saved JSON:", outpath)
-
 
 def _infer_run_label(path: str) -> str:
     base = os.path.basename(path)
@@ -186,12 +126,12 @@ def hist_stats(arr, bins):
     if h.sum() == 0:
         return None
     mu = float(arr.mean())
-    mode = float(0.5 * (edges[np.argmax(h)] + edges[np.argmax(h)+1]))
+    mode = float(0.5 * (edges[np.argmax(h)] + edges[np.argmax(h) + 1]))
     return mu, mode, h
 
 # ================= GAUSS FIT (anchor position) =================
 def _gauss(x, A, mu, sig):
-    return A * np.exp(-0.5 * ((x - mu) / sig)**2)
+    return A * np.exp(-0.5 * ((x - mu) / sig) ** 2)
 
 def fit_gaussian_to_peak(arr_abs, bins, window=0.5):
     h, edges = np.histogram(arr_abs, bins=bins)
@@ -289,10 +229,171 @@ def derive_family_calibration_fixed_anchor(root_file, grid, anchor_key, calib_st
     }
     return shifts, (anchor_key, anchor_info), stats
 
+# ================= NEW: COLUMN-OVERLAY PLOTS =================
+def column_overlay_hists_to_pdf(pdf, root_file, grid, shifts, title, apply_shift=False):
+    """
+    For each column index in `grid`, overlay histograms for all channels in that column
+    on a single large plot (figsize 12x9). Linear y-scale. Draw mode per channel as
+    dashed vertical line, and include mode in legend.
+    """
+    bins = np.linspace(*XLIM, NBINS + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
+
+    nrows = len(grid)
+    ncols = max(len(r) for r in grid)
+
+    with uproot.open(root_file) as f:
+        tree = f[TREE_NAME]
+        keys = set(tree.keys())
+
+        for cc in range(ncols):
+            # gather codes in this column (top-to-bottom)
+            codes = []
+            for rr in range(nrows):
+                if cc >= len(grid[rr]):
+                    continue
+                code = grid[rr][cc]
+                if code is not None:
+                    codes.append(code)
+
+            fig, ax = plt.subplots(figsize=(12, 9))
+            ax.set_title(f"{title}\nColumn {cc}  ({'POST shifted' if apply_shift else 'PRE raw'})", fontsize=14)
+
+            ax.set_xlim(*XLIM)
+            ax.set_xlabel(r"$|t_{\mathrm{final}}|$ [ns]")
+            ax.set_ylabel("Events")
+            ax.tick_params(direction="in", top=True, right=True)
+
+            any_plotted = False
+            ymax = 0
+
+            for code in codes:
+                b, g, ch = parse_code(code)
+                k = branch_name(b, g, ch)
+                if k not in keys:
+                    continue
+
+                raw0 = tree[k].array(library="np")
+                if raw0.size < MIN_RAW:
+                    continue
+
+                arr = prep_array(raw0)
+                if arr is None:
+                    continue
+
+                if apply_shift:
+                    arr = arr + shifts.get((b, g, ch), 0.0)
+
+                st = hist_stats(arr, bins)
+                if st is None:
+                    continue
+                _mu, mode, h = st
+                ymax = max(ymax, int(h.max()))
+
+                # plot hist
+                ln, = ax.step(centers, h, where="mid", lw=1.6,
+                              label=f"{code}  (mode={mode:.3f}, N={arr.size})")
+                # mode line in same color
+                ax.axvline(mode, color=ln.get_color(), linestyle="--", linewidth=1.8, alpha=0.95)
+
+                any_plotted = True
+
+            if not any_plotted:
+                ax.text(0.5, 0.5, "No usable channels in this column (missing/low stats).",
+                        ha="center", va="center", transform=ax.transAxes, fontsize=14)
+            else:
+                ax.set_ylim(0, max(1, int(1.15 * ymax)))
+                ax.legend(fontsize=9, frameon=False, ncol=1, loc="upper right")
+
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
 
 
+def row_overlay_hists_to_pdf(pdf, root_file, grid, shifts, title, apply_shift=False):
+    """
+    For each ROW in `grid`, overlay histograms for all channel codes in that row
+    on a single large plot (figsize 12x9). Linear y-scale.
+    Draw mode per channel as dashed vertical line (same color as that channel),
+    and include mode + N in legend.
+    """
+    bins = np.linspace(*XLIM, NBINS + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
 
-# ================= PLOTTING =================
+    with uproot.open(root_file) as f:
+        tree = f[TREE_NAME]
+        keys = set(tree.keys())
+
+        for rr, row in enumerate(grid):
+            # keep only actual channels in this row
+            codes = [code for code in row if code is not None]
+
+            fig, ax = plt.subplots(figsize=(12, 9))
+
+            # show exactly which channels are overlaid
+            codes_str = ", ".join(codes) if codes else "—"
+            ax.set_title(
+                f"{title}\nRow {rr}: [{codes_str}]  ({'POST shifted' if apply_shift else 'PRE raw'})",
+                fontsize=13
+            )
+
+            ax.set_xlim(*XLIM)
+            ax.set_xlabel(r"$|t_{\mathrm{final}}|$ [ns]")
+            ax.set_ylabel("Events")
+            ax.tick_params(direction="in", top=True, right=True)
+
+            any_plotted = False
+            ymax = 0
+
+            for code in codes:
+                b, g, ch = parse_code(code)
+                k = branch_name(b, g, ch)
+                if k not in keys:
+                    continue
+
+                raw0 = tree[k].array(library="np")
+                if raw0.size < MIN_RAW:
+                    continue
+
+                arr = prep_array(raw0)
+                if arr is None:
+                    continue
+
+                if apply_shift:
+                    arr = arr + shifts.get((b, g, ch), 0.0)
+
+                st = hist_stats(arr, bins)
+                if st is None:
+                    continue
+
+                _mu, mode, h = st
+                ymax = max(ymax, int(h.max()))
+
+                # hist line
+                ln, = ax.step(
+                    centers, h, where="mid", lw=1.8,
+                    label=f"{code}  (mode={mode:.3f}, N={arr.size})"
+                )
+
+                # mode dashed line same color as that channel curve
+                ax.axvline(mode, color=ln.get_color(), linestyle="--", linewidth=2.0, alpha=0.95)
+
+                any_plotted = True
+
+            if not any_plotted:
+                ax.text(
+                    0.5, 0.5, "No usable channels in this row (missing/low stats).",
+                    ha="center", va="center", transform=ax.transAxes, fontsize=14
+                )
+            else:
+                ax.set_ylim(0, max(1, int(1.15 * ymax)))
+                ax.legend(fontsize=10, frameon=False, loc="upper right")
+
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+# ================= PLOTTING (existing) =================
 def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
     bins = np.linspace(*XLIM, NBINS + 1)
     centers = 0.5 * (bins[1:] + bins[:-1])
@@ -343,6 +444,7 @@ def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
                 cache[(r, c)] = ("ok", code, mu_pre, mu_post, mode_pre, mode_post, h_pre, h_post)
 
         # draw
+        ln1 = ln2 = None
         for r, row in enumerate(grid):
             for c, code in enumerate(row):
                 ax = axes[r, c]
@@ -392,9 +494,11 @@ def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
 
         fig.text(0.01, 0.5, "Events", va="center", rotation=90)
         fig.suptitle(title, fontsize=14)
-        fig.legend([ln1, ln2], ["PRE (raw)", "POST (shifted)"],
-                   loc="center left", bbox_to_anchor=(0.86, 0.5),
-                   fontsize=10, frameon=False)
+
+        if ln1 is not None and ln2 is not None:
+            fig.legend([ln1, ln2], ["PRE (raw)", "POST (shifted)"],
+                       loc="center left", bbox_to_anchor=(0.86, 0.5),
+                       fontsize=10, frameon=False)
 
         fig.subplots_adjust(left=0.05, right=0.84, top=0.94, bottom=0.05, hspace=0.12, wspace=0.05)
         pdf.savefig(fig)
@@ -471,7 +575,7 @@ def main():
     ap.add_argument("--reference", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1501_250928105227_converted_timingskim.root")
     ap.add_argument("--test", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1511_250928180741_converted_timingskim.root")
     ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/calibration_studiesZ/MODE_CALIB_OUTPUT")
-    ap.add_argument("--calib-stat", choices=["mean", "mode"], default="mean",
+    ap.add_argument("--calib-stat", choices=["mean", "mode"], default="mode",
                     help="Use channel mean or histogram mode when computing shifts (anchor uses Gaussian-fit peak).")
     args = ap.parse_args()
 
@@ -507,14 +611,39 @@ def main():
             grid = FAMILIES[fam]
             shifts = shifts_by_family[fam]
 
-            mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts,
-                                   title=f"{tag} — {fam} mosaic PRE vs POST")
+            # mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts,
+                                #    title=f"{tag} — {fam} mosaic PRE vs POST")
 
-            for qty in ["mean", "mode"]:
-                heatmap_to_pdf(pdf, root_file, grid, shifts, quantity=qty, apply_shift=False,
-                               title=f"{tag} — {fam} heatmap {qty} PRE")
-                heatmap_to_pdf(pdf, root_file, grid, shifts, quantity=qty, apply_shift=True,
-                               title=f"{tag} — {fam} heatmap {qty} POST")
+            # NEW: column overlays (PRE and POST) with per-channel mode lines + legend
+            # column_overlay_hists_to_pdf(
+            #     pdf, root_file, grid, shifts,
+            #     title=f"{tag} — {fam} COLUMN overlays (mode dashed per channel)",
+            #     apply_shift=False
+            # )
+            # column_overlay_hists_to_pdf(
+            #     pdf, root_file, grid, shifts,
+            #     title=f"{tag} — {fam} COLUMN overlays (mode dashed per channel)",
+            #     apply_shift=True
+            # )
+
+            # NEW: row overlays (the 4-per-row like ["006","004","206","204"])
+            row_overlay_hists_to_pdf(
+                pdf, root_file, grid, shifts,
+                title=f"{tag} — {fam} ROW overlays (mode dashed per channel)",
+                apply_shift=False
+            )
+            row_overlay_hists_to_pdf(
+                pdf, root_file, grid, shifts,
+                title=f"{tag} — {fam} ROW overlays (mode dashed per channel)",
+                apply_shift=True
+)
+
+
+            # for qty in ["mean", "mode"]:
+            #     heatmap_to_pdf(pdf, root_file, grid, shifts, quantity=qty, apply_shift=False,
+            #                    title=f"{tag} — {fam} heatmap {qty} PRE")
+            #     heatmap_to_pdf(pdf, root_file, grid, shifts, quantity=qty, apply_shift=True,
+            #                    title=f"{tag} — {fam} heatmap {qty} POST")
 
     with PdfPages(ref_pdf_path) as pdf:
         write_all_pages(pdf, args.reference, tag=f"REFERENCE {ref_label} ({suffix})")
