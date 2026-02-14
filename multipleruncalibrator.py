@@ -488,7 +488,8 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
 
         ax.set_xlabel(_xlabel())
         ax.set_ylabel("Events")
-        ax.set_title(f"Channel {code_str} overlay ({label})  —  branch: {k}\n{tag}", fontsize=13)
+        ax.set_title(f"Channel {code_str} ", fontsize=13)
+        
 
         handles = []
         labels = []
@@ -514,7 +515,7 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
         # --- top axis with MINOR ticks at each mode ---
         ax_top = ax.twiny()
         ax_top.set_xlim(ax.get_xlim())
-        ax_top.set_xlabel("Mode markers (minor ticks)", labelpad=8)
+        #ax_top.set_xlabel("Mode markers (minor ticks)", labelpad=8)
 
         # no major ticks/labels
         ax_top.set_xticks([])
@@ -528,8 +529,8 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
         # legend
         nitems = len(labels)
         ncol = 1 if nitems <= 8 else 2 if nitems <= 18 else 3
-        # ax.legend(handles, labels, fontsize=9, frameon=False, ncol=ncol,
-        #           loc="upper right", handlelength=2.4, columnspacing=1.2, handletextpad=0.6)
+        ax.legend(handles, labels, fontsize=9, frameon=False, ncol=ncol,
+                  loc="upper left", handlelength=2.4, columnspacing=1.2, handletextpad=0.6)
 
         fig.tight_layout()
         pdf.savefig(fig)
