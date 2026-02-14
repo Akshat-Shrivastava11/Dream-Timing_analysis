@@ -7,6 +7,7 @@ import numpy as np
 import uproot
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.ticker import FixedLocator
 
 # ================= DEFAULTS =================
 TREE_NAME = "EventTree"
@@ -186,7 +187,7 @@ def _extract_int(s: str, pattern: str) -> int:
 def _build_color_map(runlabels):
     """
     Guarantee distinct colors for each runlabel by sampling a colormap at N points.
-    For N ~ 10-30, tab20 is good; fall back to hsv for larger N.
+    For N ~ 10-30, tab20 is good; fall back to turbo/hsv for larger N.
     """
     n = len(runlabels)
     if n <= 20:
@@ -196,10 +197,21 @@ def _build_color_map(runlabels):
     else:
         cmap = plt.get_cmap("hsv")
 
-    # sample evenly in [0,1)
     xs = np.linspace(0.0, 1.0, n, endpoint=False)
     colors = [cmap(x) for x in xs]
     return {rl: colors[i] for i, rl in enumerate(runlabels)}
+
+def _mode_from_hist(arr, bins):
+    """
+    Histogram mode = center of the bin with maximum counts.
+    Returns (mode_value, counts_max, hist_counts).
+    """
+    h, _ = np.histogram(arr, bins=bins)
+    if h.sum() == 0:
+        return (np.nan, 0, h)
+    idx = int(np.argmax(h))
+    centers = 0.5 * (bins[1:] + bins[:-1])
+    return (float(centers[idx]), int(h[idx]), h)
 
 # ================= CORE: overlay mosaic =================
 def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
@@ -231,7 +243,7 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
     if len(opened) == 0:
         raise RuntimeError("No readable input files.")
 
-    # unique colors per file label (no duplicates)
+    # unique colors per file label
     color_map = _build_color_map(labels_in_order)
 
     # cell[(r,c)] = None OR {"code":..., "status":..., "items":[(rlabel,h,mu,sig,n), ...]}
@@ -280,7 +292,6 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
             if len(items) == 0:
                 cell[(r, c)] = {"code": code, "status": "nostats", "items": []}
             else:
-                # stable sort by run then timestamp
                 items = sorted(items, key=lambda x: (_extract_int(x[0], r"run(\d+)"),
                                                     _extract_int(x[0], r"_(\d{11,12})")))
                 cell[(r, c)] = {"code": code, "status": "ok", "items": items}
@@ -303,7 +314,6 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
         elif ncols == 1:
             axes = np.array([[ax] for ax in axes])
 
-        # handles for legend page
         legend_handles = {}
 
         for rr in range(nrows):
@@ -326,7 +336,6 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
                             ha="center", va="center", transform=ax.transAxes, fontsize=9)
                     continue
 
-                # draw overlays
                 for (rl, h, mu, sig, n) in entry["items"]:
                     color = color_map[rl]
                     ln, = ax.step(centers, h, where="mid", linewidth=1.0, alpha=0.95, color=color)
@@ -336,8 +345,6 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
 
                 ax.set_title(code, fontsize=9, pad=2)
 
-                # ---- per-cell μ,σ: THESE ARE FOR THIS CHANNEL CELL (code = b,g,ch) ----
-                # pick the top few runs by entries so it's readable
                 top = sorted(entry["items"], key=lambda x: x[4], reverse=True)[:CELL_STATS_MAXLINES]
                 if len(top) > 0:
                     lines = [f"{rl}: μ={mu:.2f}, σ={sig:.2f}" for (rl, _, mu, sig, _) in top]
@@ -357,7 +364,7 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
         pdf.savefig(fig)
         plt.close(fig)
 
-        # PAGE 2: legend-only (color key). NO μ,σ here to avoid channel ambiguity.
+        # PAGE 2: legend-only
         legend_labels = sorted(list(legend_handles.keys()),
                                key=lambda s: (_extract_int(s, r"run(\d+)"), _extract_int(s, r"_(\d{11,12})")))
         handles = [legend_handles[k] for k in legend_labels]
@@ -387,6 +394,182 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
 
     print("Saved:", out)
 
+# ================= NEW: single-channel overlay for 104 =================
+def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
+                                    tree_name, nbins, cut_min, min_entries, min_raw):
+    """
+    Make a standalone overlay plot for one channel code (e.g. "104").
+      - Overlaid histograms for each run
+      - Vertical dashed line per run at MODE
+      - Top axis with minor ticks at each mode
+      - Legend: includes mode and sigma per run
+    """
+    os.makedirs(outdir, exist_ok=True)
+    tag = _fileset_tag(files)
+    out = os.path.join(outdir, f"CHANNEL_{code_str}_OVERLAY_{label}_{tag}.pdf")
+
+    b, g, ch = _parse_code(code_str)
+    k = _branch(b, g, ch)
+
+    bins = np.linspace(xlim[0], xlim[1], nbins + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
+
+    # open and collect
+    opened = []
+    labels_in_order = []
+    for fpath in files:
+        try:
+            uf = uproot.open(fpath)
+            tree = uf[tree_name]
+            keys = set(tree.keys())
+            rl = _run_label(fpath)
+            opened.append((uf, tree, keys, rl))
+            labels_in_order.append(rl)
+        except Exception as e:
+            print(f"[WARN] failed to open {fpath}: {e}")
+
+    if len(opened) == 0:
+        raise RuntimeError("No readable input files.")
+
+    color_map = _build_color_map(labels_in_order)
+
+    items = []  # (rl, h, mode, sigma, n)
+    global_ymax = 1
+
+    for (uf, tree, keys, rl) in opened:
+        if k not in keys:
+            continue
+        try:
+            arr = tree[k].array(library="np")
+        except Exception:
+            continue
+
+        arr = _prep(arr, xlim, cut_min, min_entries, min_raw)
+        if arr is None:
+            continue
+
+        mode, _, h = _mode_from_hist(arr, bins)
+        sig = float(arr.std())
+        n = int(arr.size)
+
+        if h.sum() == 0 or not np.isfinite(mode):
+            continue
+
+        items.append((rl, h, mode, sig, n))
+        global_ymax = max(global_ymax, int(h.max()))
+
+    for (uf, _, _, _) in opened:
+        try:
+            uf.close()
+        except Exception:
+            pass
+
+    if len(items) == 0:
+        print(f"[WARN] no valid data found for channel {code_str} (branch {k}); skipping {out}")
+        return
+
+    # stable sort
+    items = sorted(items, key=lambda x: (_extract_int(x[0], r"run(\d+)"),
+                                        _extract_int(x[0], r"_(\d{11,12})")))
+
+    modes = [it[2] for it in items]
+
+    with PdfPages(out) as pdf:
+        fig = plt.figure(figsize=(11.0, 6.5))
+        ax = fig.add_subplot(111)
+
+        ax.set_xlim(*xlim)
+        ax.set_ylim(0, global_ymax * 1.10)
+        from matplotlib.ticker import AutoMinorLocator
+
+        ax.xaxis.set_minor_locator(AutoMinorLocator())
+        ax.tick_params(axis="x", which="minor", length=4)
+        ax.tick_params(axis="x", which="major", length=7)
+
+        ax.set_xlabel(_xlabel())
+        ax.set_ylabel("Events")
+        ax.set_title(f"Channel {code_str} overlay ({label})  —  branch: {k}\n{tag}", fontsize=13)
+
+        handles = []
+        labels = []
+
+        # draw hist + mode lines
+        # draw hist + mode lines
+        for (rl, h, mode, sig, n) in items:
+            color = color_map[rl]
+
+            
+            stair = ax.step(centers, h, where="mid", linewidth=1.2, alpha=0.95, color=color)[0]
+            ax.fill_between(centers, h, step="mid", alpha=0.18, color=color)
+
+            
+            ax.axvline(mode, linestyle="--", linewidth=2.0, alpha=0.95, color=color)
+
+            # legend handle: use the histogram line (not the vline)
+            handles.append(stair)
+            labels.append(f"{rl}  (mode={mode:.2f}, σ={sig:.2f}, N={n})")
+
+
+
+        # --- top axis with MINOR ticks at each mode ---
+        ax_top = ax.twiny()
+        ax_top.set_xlim(ax.get_xlim())
+        ax_top.set_xlabel("Mode markers (minor ticks)", labelpad=8)
+
+        # no major ticks/labels
+        ax_top.set_xticks([])
+        ax_top.set_xticklabels([])
+
+        # minor ticks at each mode
+        ax_top.xaxis.set_minor_locator(FixedLocator(modes))
+        ax_top.tick_params(axis="x", which="minor", length=6)
+        ax_top.tick_params(axis="x", which="major", length=0)
+
+        # legend
+        nitems = len(labels)
+        ncol = 1 if nitems <= 8 else 2 if nitems <= 18 else 3
+        # ax.legend(handles, labels, fontsize=9, frameon=False, ncol=ncol,
+        #           loc="upper right", handlelength=2.4, columnspacing=1.2, handletextpad=0.6)
+
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # -------- PAGE 2: legend-only --------
+        figL = plt.figure(figsize=(8.5, 11))
+        axL = figL.add_subplot(111)
+        axL.axis("off")
+
+        axL.set_title(
+            f"Channel {code_str} legend\n"
+            f"Dashed lines = histogram mode, σ = RMS\n{tag}",
+            fontsize=14,
+            pad=14
+        )
+
+        nitems = len(labels)
+        max_per_col = 28
+        ncol = max(1, int(np.ceil(nitems / max_per_col)))
+        fontsize = 11 if ncol == 1 else 10 if ncol == 2 else 9
+
+        figL.legend(
+            handles,
+            labels,
+            loc="center",
+            frameon=False,
+            fontsize=fontsize,
+            ncol=ncol,
+            handlelength=2.6,
+            columnspacing=1.4,
+            handletextpad=0.8,
+        )
+
+        pdf.savefig(figL)
+        plt.close(figL)
+
+
+    print("Saved:", out)
+
 # ================= MAIN =================
 def main():
     global NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, HSPACE, WSPACE, CELL_STATS_MAXLINES
@@ -401,7 +584,7 @@ def main():
     ap.add_argument("--run-max", type=int, default=None, help="Keep only runs <= run-max")
 
     ap.add_argument("--tree", default=TREE_NAME, help="Tree name")
-    ap.add_argument("--outdir", default="./TRUE-HGtiming/calibration_studiesZ/overlay_runs",
+    ap.add_argument("--outdir", default="./TRUE-HGtiming/calibration_studiesZ/overlay_runs_1499_1501",
                     help="Output directory")
 
     ap.add_argument("--xmin", type=float, default=4.0, help="Min |tfinal|")
@@ -413,6 +596,11 @@ def main():
 
     ap.add_argument("--cell-stats-lines", type=int, default=CELL_STATS_MAXLINES,
                     help="How many run μ,σ lines to print inside each channel cell (top by entries).")
+
+    # new: choose which channel code to plot as the standalone overlay (default 104)
+    ap.add_argument("--single-channel", default="104",
+                    help="3-digit code bgc to make a standalone overlay plot for (default: 104). "
+                         "Example: 104 => Board1 Group0 Chan4")
 
     args = ap.parse_args()
 
@@ -436,14 +624,18 @@ def main():
     xlim = (args.xmin, args.xmax)
     os.makedirs(args.outdir, exist_ok=True)
 
-    make_mosaic_hist_overlay(files, QUARTZ_GRID,  "CER-Quartz",      xlim, args.outdir,
-                            args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
-    make_mosaic_hist_overlay(files, PLASTIC_GRID, "CER-Plastic",     xlim, args.outdir,
-                            args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
-    make_mosaic_hist_overlay(files, SCI_ALL_GRID, "SCI-AllChannels", xlim, args.outdir,
-                            args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
-    make_mosaic_hist_overlay(files, CER_ALL_GRID, "CER-AllChannels", xlim, args.outdir,
-                            args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
+    # make_mosaic_hist_overlay(files, QUARTZ_GRID,  "CER-Quartz",      xlim, args.outdir,
+    #                         args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
+    # make_mosaic_hist_overlay(files, PLASTIC_GRID, "CER-Plastic",     xlim, args.outdir,
+    #                         args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
+    # make_mosaic_hist_overlay(files, SCI_ALL_GRID, "SCI-AllChannels", xlim, args.outdir,
+    #                         args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
+    # make_mosaic_hist_overlay(files, CER_ALL_GRID, "CER-AllChannels", xlim, args.outdir,
+    #                         args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
+
+    # ---- NEW: standalone channel overlay with modes ----
+    make_channel_overlay_with_modes(files, args.single_channel, "ALL-RUNS", xlim, args.outdir,
+                                    args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
 
     print("All done.")
 
