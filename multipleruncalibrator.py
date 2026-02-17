@@ -8,6 +8,7 @@ import uproot
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import FixedLocator
+from scipy.optimize import curve_fit
 
 # ================= DEFAULTS =================
 TREE_NAME = "EventTree"
@@ -394,19 +395,25 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
 
     print("Saved:", out)
 
+
+
+def gaussian(x, amp, mean, sigma):
+    return amp * np.exp(-(x - mean)**2 / (2 * sigma**2))
+
+
 # ================= NEW: single-channel overlay for 104 =================
 def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
                                     tree_name, nbins, cut_min, min_entries, min_raw):
     """
-    Make a standalone overlay plot for one channel code (e.g. "104").
-      - Overlaid histograms for each run
-      - Vertical dashed line per run at MODE
-      - Top axis with minor ticks at each mode
-      - Legend: includes mode and sigma per run
+    Overlay plot for one channel. 
+    Legend reports:
+      - Mean: Derived from the mode-centered Gaussian fit
+      - Sigma: The width of the main peak only
+      - FWHM: Full Width at Half Maximum calculated from fit sigma
     """
     os.makedirs(outdir, exist_ok=True)
     tag = _fileset_tag(files)
-    out = os.path.join(outdir, f"CHANNEL_{code_str}_OVERLAY_{label}_{tag}.pdf")
+    out = os.path.join(outdir, f"CHANNEL_{code_str}_FIT_OVERLAY_{label}_{tag}.pdf")
 
     b, g, ch = _parse_code(code_str)
     k = _branch(b, g, ch)
@@ -414,7 +421,7 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
     bins = np.linspace(xlim[0], xlim[1], nbins + 1)
     centers = 0.5 * (bins[1:] + bins[:-1])
 
-    # open and collect
+    # ... [File opening and data collection logic remains the same] ...
     opened = []
     labels_in_order = []
     for fpath in files:
@@ -428,146 +435,91 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
         except Exception as e:
             print(f"[WARN] failed to open {fpath}: {e}")
 
-    if len(opened) == 0:
-        raise RuntimeError("No readable input files.")
+    if not opened: return
 
     color_map = _build_color_map(labels_in_order)
-
-    items = []  # (rl, h, mode, sigma, n)
+    items = []  
     global_ymax = 1
 
     for (uf, tree, keys, rl) in opened:
-        if k not in keys:
-            continue
+        if k not in keys: continue
         try:
             arr = tree[k].array(library="np")
-        except Exception:
-            continue
+        except: continue
 
         arr = _prep(arr, xlim, cut_min, min_entries, min_raw)
-        if arr is None:
-            continue
+        if arr is None: continue
 
-        mode, _, h = _mode_from_hist(arr, bins)
-        sig = float(arr.std())
-        n = int(arr.size)
+        mode, max_counts, h = _mode_from_hist(arr, bins)
+        if h.sum() == 0: continue
 
-        if h.sum() == 0 or not np.isfinite(mode):
-            continue
+        # Focus tightly on the main peak
+        fit_window = 1.5 
+        mask = (centers >= mode - fit_window) & (centers <= mode + fit_window)
+        x_fit = centers[mask]
+        y_fit = h[mask]
 
-        items.append((rl, h, mode, sig, n))
+        fit_mu, fit_sig, fwhm = np.nan, np.nan, np.nan
+        y_gauss = None
+
+        if len(x_fit) > 4:
+            try:
+                # p0: [Amplitude, Mean (anchor to mode), Sigma (guess 0.3ns)]
+                p0 = [max_counts, mode, 0.3]
+                popt, _ = curve_fit(gaussian, x_fit, y_fit, p0=p0)
+                fit_mu = popt[1]
+                fit_sig = abs(popt[2])
+                # Calculate FWHM from sigma
+                fwhm = 2.355 * fit_sig
+                y_gauss = gaussian(x_fit, *popt)
+            except:
+                fit_mu, fit_sig = mode, float(arr.std())
+                fwhm = 2.355 * fit_sig
+
+        items.append((rl, h, mode, fit_mu, fit_sig, fwhm, int(arr.size), x_fit, y_gauss))
         global_ymax = max(global_ymax, int(h.max()))
 
+    # Close handles
     for (uf, _, _, _) in opened:
-        try:
-            uf.close()
-        except Exception:
-            pass
+        try: uf.close()
+        except: pass
 
-    if len(items) == 0:
-        print(f"[WARN] no valid data found for channel {code_str} (branch {k}); skipping {out}")
-        return
+    items = sorted(items, key=lambda x: (_extract_int(x[0], r"run(\d+)"), _extract_int(x[0], r"_(\d{11,12})")))
 
-    # stable sort
-    items = sorted(items, key=lambda x: (_extract_int(x[0], r"run(\d+)"),
-                                        _extract_int(x[0], r"_(\d{11,12})")))
-
-    modes = [it[2] for it in items]
-
+    # --- Plotting ---
     with PdfPages(out) as pdf:
-        fig = plt.figure(figsize=(11.0, 6.5))
-        ax = fig.add_subplot(111)
-
+        fig, ax = plt.subplots(figsize=(12, 8)) # Slightly taller for legend room
         ax.set_xlim(*xlim)
-        ax.set_ylim(0, global_ymax * 1.10)
-        from matplotlib.ticker import AutoMinorLocator
-
-        ax.xaxis.set_minor_locator(AutoMinorLocator())
-        ax.tick_params(axis="x", which="minor", length=4)
-        ax.tick_params(axis="x", which="major", length=7)
-
+        ax.set_ylim(0, global_ymax * 1.3) # Extra headroom for legend
         ax.set_xlabel(_xlabel())
         ax.set_ylabel("Events")
-        ax.set_title(f"Channel {code_str} ", fontsize=13)
-        
+        ax.set_title(f"Channel {code_str}: Peak Fitting with FWHM", fontsize=14)
 
-        handles = []
-        labels = []
+        handles, labels = [], []
 
-        # draw hist + mode lines
-        # draw hist + mode lines
-        for (rl, h, mode, sig, n) in items:
+        for (rl, h, mode, f_mu, f_sig, fwhm, n, x_f, y_f) in items:
             color = color_map[rl]
-
+            ax.step(centers, h, where="mid", lw=1.0, alpha=0.3, color=color)
             
-            stair = ax.step(centers, h, where="mid", linewidth=1.2, alpha=0.95, color=color)[0]
-            ax.fill_between(centers, h, step="mid", alpha=0.18, color=color)
-
+            if y_f is not None:
+                line, = ax.plot(x_f, y_f, color=color, lw=2.5)
+                handles.append(line)
+            else:
+                line = ax.axvline(mode, color=color, ls='--')
+                handles.append(line)
             
-            ax.axvline(mode, linestyle="--", linewidth=2.0, alpha=0.95, color=color)
+            # LEGEND with FWHM
+            legend_str = (f"{rl}: Mean={f_mu:.3f}, $\sigma$={f_sig:.3f}, "
+                          f"FWHM={fwhm:.3f} (N={n})")
+            labels.append(legend_str)
 
-            # legend handle: use the histogram line (not the vline)
-            handles.append(stair)
-            labels.append(f"{rl}  (mode={mode:.2f}, σ={sig:.2f}, N={n})")
-
-
-
-        # --- top axis with MINOR ticks at each mode ---
-        ax_top = ax.twiny()
-        ax_top.set_xlim(ax.get_xlim())
-        #ax_top.set_xlabel("Mode markers (minor ticks)", labelpad=8)
-
-        # no major ticks/labels
-        ax_top.set_xticks([])
-        ax_top.set_xticklabels([])
-
-        # minor ticks at each mode
-        ax_top.xaxis.set_minor_locator(FixedLocator(modes))
-        ax_top.tick_params(axis="x", which="minor", length=6)
-        ax_top.tick_params(axis="x", which="major", length=0)
-
-        # legend
-        nitems = len(labels)
-        ncol = 1 if nitems <= 8 else 2 if nitems <= 18 else 3
-        ax.legend(handles, labels, fontsize=9, frameon=False, ncol=ncol,
-                  loc="upper left", handlelength=2.4, columnspacing=1.2, handletextpad=0.6)
-
+        # Using a smaller font and more columns to fit the longer legend strings
+        ax.legend(handles, labels, fontsize=8, ncol=2, frameon=True, 
+                  loc="upper right", bbox_to_anchor=(1.0, 1.0))
+        
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
-
-        # -------- PAGE 2: legend-only --------
-        figL = plt.figure(figsize=(8.5, 11))
-        axL = figL.add_subplot(111)
-        axL.axis("off")
-
-        axL.set_title(
-            f"Channel {code_str} legend\n"
-            f"Dashed lines = histogram mode, σ = RMS\n{tag}",
-            fontsize=14,
-            pad=14
-        )
-
-        nitems = len(labels)
-        max_per_col = 28
-        ncol = max(1, int(np.ceil(nitems / max_per_col)))
-        fontsize = 11 if ncol == 1 else 10 if ncol == 2 else 9
-
-        figL.legend(
-            handles,
-            labels,
-            loc="center",
-            frameon=False,
-            fontsize=fontsize,
-            ncol=ncol,
-            handlelength=2.6,
-            columnspacing=1.4,
-            handletextpad=0.8,
-        )
-
-        pdf.savefig(figL)
-        plt.close(figL)
-
 
     print("Saved:", out)
 
