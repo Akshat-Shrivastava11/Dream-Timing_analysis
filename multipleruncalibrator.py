@@ -5,9 +5,9 @@ import glob
 import argparse
 import numpy as np
 import uproot
+import awkward as ak
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
-from matplotlib.ticker import FixedLocator
 from scipy.optimize import curve_fit
 
 # ================= DEFAULTS =================
@@ -18,14 +18,137 @@ CUT_MIN = 1.0
 MIN_ENTRIES = 200
 MIN_RAW = 500
 
-NG = 4
-NC = 9
-
 HSPACE = 0.10
 WSPACE = 0.05
 
 # how many runs to print (mu,sigma) inside each cell
 CELL_STATS_MAXLINES = 3
+
+# ================= PID CONFIGURATION =================
+PID_BRANCH_MAP = {
+    "PSD": "DRS_Board7_Group1_Channel1",
+    "HoleVeto": "DRS_Board7_Group1_Channel6",
+    "NC": "DRS_Board7_Group1_Channel7",
+    "T3": "DRS_Board7_Group2_Channel0",
+    "T4": "DRS_Board7_Group2_Channel1",
+    "KT1": "DRS_Board7_Group2_Channel2",
+    "KT2": "DRS_Board7_Group2_Channel3",
+    "TTUMuonVeto": "DRS_Board7_Group2_Channel4",
+    "Cer474": "DRS_Board7_Group2_Channel5",
+    "Cer519": "DRS_Board7_Group2_Channel6",
+    "Cer537": "DRS_Board7_Group2_Channel7",
+}
+
+def get_service_drs_cut(service_drs: str) -> tuple:
+    # returns (ts_min, ts_max, val_cut, method)
+    cut_default = (0, 1000, -5e4, "Sum")
+    cuts = {
+        "HoleVeto": (100, 350, -2e3, "Sum"),
+        "PSD": (100, 400, -3500.0, "Sum"),
+        "TTUMuonVeto": (200, 400, -2e3, "Sum"),
+        "Cer474": (800, 900, -2000.0, "Sum"),
+        "Cer519": (450, 550, -1000.0, "Sum"),
+        "Cer537": (400, 500, -500.0, "Sum"),
+    }
+    return cuts.get(service_drs, cut_default)
+
+def get_particle_selection(particle_type: str) -> dict:
+    """
+    Returns a dictionary of detector requirements.
+    True: Must Fire (Signal < Cut)
+    False: Must Veto (Signal >= Cut, i.e. did NOT fire)
+    """
+    selections = {
+        "muon": {
+            "TTUMuonVeto": True,
+            "PSD": False,
+        },
+        "pion": {
+            "TTUMuonVeto": False,
+            "PSD": False,
+            "Cer474": True, "Cer519": True, "Cer537": True
+        },
+        "electron": {
+            "TTUMuonVeto": False,
+            "PSD": True,
+            "Cer474": True, "Cer519": True, "Cer537": True
+        },
+        "proton": {
+            "TTUMuonVeto": False,
+            "PSD": False,
+            "Cer474": False, "Cer519": False, "Cer537": False
+        },
+    }
+    return selections.get(particle_type.lower(), {})
+
+def compute_pid_mask(tree, particle_type):
+    """
+    Computes PID mask with BASELINE SUBTRACTION.
+    """
+    requirements = get_particle_selection(particle_type)
+    if not requirements:
+        print(f"[PID] Warning: No requirements defined for '{particle_type}'. Using all events.")
+        return None
+
+    # Initialize mask as all True
+    n_entries = tree.num_entries
+    final_mask = np.ones(n_entries, dtype=bool)
+    
+    available_keys = set(tree.keys())
+
+    print(f"  [PID] Applying selection for {particle_type} (with baseline subtraction)...")
+
+    for det, must_fire in requirements.items():
+        branch_name = PID_BRANCH_MAP.get(det)
+        if not branch_name or branch_name not in available_keys:
+            print(f"    [PID] SKIP: Branch '{branch_name}' ({det}) not found.")
+            continue
+
+        # Get cut parameters
+        ts_min, ts_max, val_cut, method = get_service_drs_cut(det)
+
+        try:
+            # 1. Load Raw Waveform using Awkward Array
+            waveforms = tree[branch_name].array(library="ak")
+            
+            if method == "Sum":
+                # 2. CALCULATE BASELINE (First 30 bins)
+                baseline = ak.mean(waveforms[:, :30], axis=1)
+                
+                # 3. SUBTRACT BASELINE
+                waveforms_blsub = waveforms - baseline
+                
+                # 4. INTEGRATE WINDOW
+                window = waveforms_blsub[:, int(ts_min):int(ts_max)]
+                
+                # Sum along axis 1 (the time samples)
+                window_sum = ak.sum(window, axis=1)
+                
+                # Convert back to numpy for boolean logic
+                window_sum_np = ak.to_numpy(window_sum)
+                
+                # 5. CHECK CUT
+                is_fired = window_sum_np < val_cut
+            else:
+                print(f"    [PID] Method {method} not implemented. Skipping {det}.")
+                continue
+
+            # Update Mask Logic
+            initial_count = np.sum(final_mask)
+            if must_fire:
+                final_mask = final_mask & is_fired
+            else:
+                final_mask = final_mask & (~is_fired)
+            
+            removed = initial_count - np.sum(final_mask)
+            status = "FIRED" if must_fire else "VETOED"
+            print(f"    [PID] {det:<12} ({status}): cut {val_cut:.1f} in [{ts_min}:{ts_max}] -> Removed {removed} events")
+
+        except Exception as e:
+            print(f"    [PID] CRITICAL ERROR processing {det}: {e}")
+            continue
+
+    return final_mask
 
 # ================= MOSAIC GRIDS =================
 QUARTZ_GRID = [
@@ -143,11 +266,14 @@ def _extract_runs(files):
             runs.append(int(m.group(1)))
     return runs
 
-def _fileset_tag(files):
+def _fileset_tag(files, pid_tag=""):
     runs = _extract_runs(files)
-    if not runs:
-        return f"files_n{len(files)}"
-    return f"runs{min(runs)}-{max(runs)}_n{len(files)}"
+    base = f"files_n{len(files)}"
+    if runs:
+        base = f"runs{min(runs)}-{max(runs)}_n{len(files)}"
+    if pid_tag:
+        base += f"_{pid_tag}"
+    return base
 
 def _resolve_files(args):
     if args.ana_files:
@@ -186,10 +312,6 @@ def _extract_int(s: str, pattern: str) -> int:
         return 10**18
 
 def _build_color_map(runlabels):
-    """
-    Guarantee distinct colors for each runlabel by sampling a colormap at N points.
-    For N ~ 10-30, tab20 is good; fall back to turbo/hsv for larger N.
-    """
     n = len(runlabels)
     if n <= 20:
         cmap = plt.get_cmap("tab20")
@@ -203,10 +325,6 @@ def _build_color_map(runlabels):
     return {rl: colors[i] for i, rl in enumerate(runlabels)}
 
 def _mode_from_hist(arr, bins):
-    """
-    Histogram mode = center of the bin with maximum counts.
-    Returns (mode_value, counts_max, hist_counts).
-    """
     h, _ = np.histogram(arr, bins=bins)
     if h.sum() == 0:
         return (np.nan, 0, h)
@@ -216,9 +334,12 @@ def _mode_from_hist(arr, bins):
 
 # ================= CORE: overlay mosaic =================
 def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
-                            tree_name, nbins, cut_min, min_entries, min_raw):
+                             tree_name, nbins, cut_min, min_entries, min_raw,
+                             particle_type=None):
     os.makedirs(outdir, exist_ok=True)
-    tag = _fileset_tag(files)
+    
+    pid_tag = particle_type if particle_type else "NoPID"
+    tag = _fileset_tag(files, pid_tag)
     out = os.path.join(outdir, f"HISTONLY_OVERLAY_{label}_{tag}.pdf")
 
     bins = np.linspace(xlim[0], xlim[1], nbins + 1)
@@ -230,13 +351,22 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
     # open
     opened = []
     labels_in_order = []
+    
+    print(f"--- Processing Mosaic for {pid_tag} ---")
+
     for fpath in files:
         try:
             uf = uproot.open(fpath)
             tree = uf[tree_name]
             keys = set(tree.keys())
             rl = _run_label(fpath)
-            opened.append((fpath, uf, tree, keys, rl))
+            
+            # --- COMPUTE PID MASK ONCE PER FILE ---
+            pid_mask = None
+            if particle_type:
+                pid_mask = compute_pid_mask(tree, particle_type)
+
+            opened.append((fpath, uf, tree, keys, rl, pid_mask))
             labels_in_order.append(rl)
         except Exception as e:
             print(f"[WARN] failed to open {fpath}: {e}")
@@ -244,7 +374,6 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
     if len(opened) == 0:
         raise RuntimeError("No readable input files.")
 
-    # unique colors per file label
     color_map = _build_color_map(labels_in_order)
 
     # cell[(r,c)] = None OR {"code":..., "status":..., "items":[(rlabel,h,mu,sig,n), ...]}
@@ -268,13 +397,25 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
             k = _branch(b, g, ch)
             items = []
 
-            for (_, _, tree, keys, rl) in opened:
+            for (_, _, tree, keys, rl, pid_mask) in opened:
                 if k not in keys:
                     continue
                 try:
+                    # Load tfinal
                     arr = tree[k].array(library="np")
+                    
+                    # Apply PID Mask
+                    if pid_mask is not None:
+                        # Ensure shapes match
+                        if arr.shape[0] == pid_mask.shape[0]:
+                            arr = arr[pid_mask]
+                        else:
+                            print(f"[WARN] Shape mismatch in {rl}: {k} len={arr.shape[0]}, mask len={pid_mask.shape[0]}")
+                            continue
+
                 except Exception:
                     continue
+                
                 arr = _prep(arr, xlim, cut_min, min_entries, min_raw)
                 if arr is None:
                     continue
@@ -294,11 +435,11 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
                 cell[(r, c)] = {"code": code, "status": "nostats", "items": []}
             else:
                 items = sorted(items, key=lambda x: (_extract_int(x[0], r"run(\d+)"),
-                                                    _extract_int(x[0], r"_(\d{11,12})")))
+                                                     _extract_int(x[0], r"_(\d{11,12})")))
                 cell[(r, c)] = {"code": code, "status": "ok", "items": items}
 
     # close files
-    for (_, uf, _, _, _) in opened:
+    for (_, uf, _, _, _, _) in opened:
         try:
             uf.close()
         except Exception:
@@ -360,7 +501,7 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
             if ax.axison and ax.get_visible():
                 ax.set_xlabel(_xlabel())
 
-        _global_ylabel(fig, "Events")
+        _global_ylabel(fig, f"Events ({pid_tag})")
         _tighten(fig, left=0.05, right=0.98, top=0.985, bottom=0.035, hspace=0.10, wspace=0.04)
         pdf.savefig(fig)
         plt.close(fig)
@@ -378,7 +519,7 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
         fig2 = plt.figure(figsize=(8.5, 11))
         ax2 = fig2.add_subplot(111)
         ax2.axis("off")
-        ax2.set_title(f"{label} overlays legend ({tag})\n(Colors are unique per file; μ,σ are per-channel in the mosaic cells)",
+        ax2.set_title(f"{label} overlays legend ({tag})\nPID: {pid_tag}",
                       fontsize=13, pad=12)
 
         fig2.legend(handles, legend_labels,
@@ -395,24 +536,17 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
 
     print("Saved:", out)
 
-
-
 def gaussian(x, amp, mean, sigma):
     return amp * np.exp(-(x - mean)**2 / (2 * sigma**2))
 
-
 # ================= NEW: single-channel overlay for 104 =================
 def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
-                                    tree_name, nbins, cut_min, min_entries, min_raw):
-    """
-    Overlay plot for one channel. 
-    Legend reports:
-      - Mean: Derived from the mode-centered Gaussian fit
-      - Sigma: The width of the main peak only
-      - FWHM: Full Width at Half Maximum calculated from fit sigma
-    """
+                                    tree_name, nbins, cut_min, min_entries, min_raw,
+                                    particle_type=None):
     os.makedirs(outdir, exist_ok=True)
-    tag = _fileset_tag(files)
+    
+    pid_tag = particle_type if particle_type else "NoPID"
+    tag = _fileset_tag(files, pid_tag)
     out = os.path.join(outdir, f"CHANNEL_{code_str}_FIT_OVERLAY_{label}_{tag}.pdf")
 
     b, g, ch = _parse_code(code_str)
@@ -421,16 +555,24 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
     bins = np.linspace(xlim[0], xlim[1], nbins + 1)
     centers = 0.5 * (bins[1:] + bins[:-1])
 
-    # ... [File opening and data collection logic remains the same] ...
     opened = []
     labels_in_order = []
+    
+    print(f"--- Processing Single Channel {code_str} for {pid_tag} ---")
+    
     for fpath in files:
         try:
             uf = uproot.open(fpath)
             tree = uf[tree_name]
             keys = set(tree.keys())
             rl = _run_label(fpath)
-            opened.append((uf, tree, keys, rl))
+            
+            # --- COMPUTE PID MASK ---
+            pid_mask = None
+            if particle_type:
+                pid_mask = compute_pid_mask(tree, particle_type)
+
+            opened.append((uf, tree, keys, rl, pid_mask))
             labels_in_order.append(rl)
         except Exception as e:
             print(f"[WARN] failed to open {fpath}: {e}")
@@ -439,12 +581,19 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
 
     color_map = _build_color_map(labels_in_order)
     items = []  
-    global_ymax = 1
+    global_ymax = 1 # Normalized
 
-    for (uf, tree, keys, rl) in opened:
+    for (uf, tree, keys, rl, pid_mask) in opened:
         if k not in keys: continue
         try:
             arr = tree[k].array(library="np")
+            
+            if pid_mask is not None:
+                if arr.shape[0] == pid_mask.shape[0]:
+                    arr = arr[pid_mask]
+                else:
+                    print(f" [WARN] Shape mismatch in {rl}: data={arr.shape[0]}, mask={pid_mask.shape[0]}")
+                    continue
         except: continue
 
         arr = _prep(arr, xlim, cut_min, min_entries, min_raw)
@@ -452,6 +601,10 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
 
         mode, max_counts, h = _mode_from_hist(arr, bins)
         if h.sum() == 0: continue
+
+        # --- NORMALIZATION ---
+        if h.max() > 0:
+            h = h / h.max()
 
         # Focus tightly on the main peak
         fit_window = 1.5 
@@ -464,8 +617,8 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
 
         if len(x_fit) > 4:
             try:
-                # p0: [Amplitude, Mean (anchor to mode), Sigma (guess 0.3ns)]
-                p0 = [max_counts, mode, 0.3]
+                # p0: [Amplitude, Mean, Sigma]
+                p0 = [1.0, mode, 0.3]
                 popt, _ = curve_fit(gaussian, x_fit, y_fit, p0=p0)
                 fit_mu = popt[1]
                 fit_sig = abs(popt[2])
@@ -477,10 +630,9 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
                 fwhm = 2.355 * fit_sig
 
         items.append((rl, h, mode, fit_mu, fit_sig, fwhm, int(arr.size), x_fit, y_gauss))
-        global_ymax = max(global_ymax, int(h.max()))
 
     # Close handles
-    for (uf, _, _, _) in opened:
+    for (uf, _, _, _, _) in opened:
         try: uf.close()
         except: pass
 
@@ -488,12 +640,12 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
 
     # --- Plotting ---
     with PdfPages(out) as pdf:
-        fig, ax = plt.subplots(figsize=(12, 8)) # Slightly taller for legend room
+        fig, ax = plt.subplots(figsize=(12, 8)) 
         ax.set_xlim(*xlim)
-        ax.set_ylim(0, global_ymax * 1.3) # Extra headroom for legend
+        ax.set_ylim(0, 1.3)
         ax.set_xlabel(_xlabel())
-        ax.set_ylabel("Events")
-        ax.set_title(f"Channel {code_str}: Peak Fitting with FWHM", fontsize=14)
+        ax.set_ylabel(f"Normalized Events (Peak=1.0)")
+        ax.set_title(f"Channel {code_str}: Peak Fitting with FWHM (PID: {pid_tag})", fontsize=14)
 
         handles, labels = [], []
 
@@ -513,7 +665,6 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
                           f"FWHM={fwhm:.3f} (N={n})")
             labels.append(legend_str)
 
-        # Using a smaller font and more columns to fit the longer legend strings
         ax.legend(handles, labels, fontsize=8, ncol=2, frameon=True, 
                   loc="upper right", bbox_to_anchor=(1.0, 1.0))
         
@@ -529,9 +680,9 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--ana-files", nargs="+", default=None,
-                    help="Explicit list of input ROOT files (full paths). Keeps duplicates.")
+                    help="Explicit list of input ROOT files.")
     ap.add_argument("--ana-glob", default=None,
-                    help="Glob for input ROOT files (e.g. '/path/run*_converted_timingskim.root')")
+                    help="Glob for input ROOT files.")
 
     ap.add_argument("--run-min", type=int, default=None, help="Keep only runs >= run-min")
     ap.add_argument("--run-max", type=int, default=None, help="Keep only runs <= run-max")
@@ -548,12 +699,14 @@ def main():
     ap.add_argument("--min-raw", type=int, default=MIN_RAW, help="Min raw entries before cuts")
 
     ap.add_argument("--cell-stats-lines", type=int, default=CELL_STATS_MAXLINES,
-                    help="How many run μ,σ lines to print inside each channel cell (top by entries).")
+                    help="How many run μ,σ lines to print inside each channel cell.")
 
-    # new: choose which channel code to plot as the standalone overlay (default 104)
     ap.add_argument("--single-channel", default="104",
-                    help="3-digit code bgc to make a standalone overlay plot for (default: 104). "
-                         "Example: 104 => Board1 Group0 Chan4")
+                    help="3-digit code bgc to make a standalone overlay plot for (default: 104).")
+
+    # PID ARGUMENT
+    ap.add_argument("--pid", default=None, choices=["muon", "pion", "electron", "proton"],
+                    help="Apply PID selection (muon, pion, electron, proton). Default: None.")
 
     args = ap.parse_args()
 
@@ -576,19 +729,20 @@ def main():
 
     xlim = (args.xmin, args.xmax)
     os.makedirs(args.outdir, exist_ok=True)
+    
+    pid_label = f"PID_{args.pid}" if args.pid else "AllParticles"
 
-    # make_mosaic_hist_overlay(files, QUARTZ_GRID,  "CER-Quartz",      xlim, args.outdir,
-    #                         args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
-    # make_mosaic_hist_overlay(files, PLASTIC_GRID, "CER-Plastic",     xlim, args.outdir,
-    #                         args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
-    # make_mosaic_hist_overlay(files, SCI_ALL_GRID, "SCI-AllChannels", xlim, args.outdir,
-    #                         args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
-    # make_mosaic_hist_overlay(files, CER_ALL_GRID, "CER-AllChannels", xlim, args.outdir,
-    #                         args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
+    # make_mosaic_hist_overlay(files, QUARTZ_GRID,  f"CER-Quartz_{pid_label}",       xlim, args.outdir,
+    #                          args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, args.pid)
+    # make_mosaic_hist_overlay(files, PLASTIC_GRID, f"CER-Plastic_{pid_label}",      xlim, args.outdir,
+    #                          args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, args.pid)
+    # make_mosaic_hist_overlay(files, SCI_ALL_GRID, f"SCI-AllChannels_{pid_label}", xlim, args.outdir,
+    #                          args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, args.pid)
+    # make_mosaic_hist_overlay(files, CER_ALL_GRID, f"CER-AllChannels_{pid_label}", xlim, args.outdir,
+    #                          args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, args.pid)
 
-    # ---- NEW: standalone channel overlay with modes ----
-    make_channel_overlay_with_modes(files, args.single_channel, "ALL-RUNS", xlim, args.outdir,
-                                    args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW)
+    make_channel_overlay_with_modes(files, args.single_channel, f"ALL-RUNS_{pid_label}", xlim, args.outdir,
+                                    args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, args.pid)
 
     print("All done.")
 
