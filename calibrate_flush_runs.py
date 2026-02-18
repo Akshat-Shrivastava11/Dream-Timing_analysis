@@ -8,39 +8,50 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.optimize import curve_fit
 import json
+import multiprocessing
+import time
+
+# Attempt to import PDF merging library
+try:
+    from pypdf import PdfWriter, PdfReader
+except ImportError:
+    try:
+        from PyPDF2 import PdfWriter, PdfReader
+    except ImportError:
+        print("CRITICAL ERROR: 'pypdf' or 'PyPDF2' is required for multiprocessing.")
+        print("Please run: pip install pypdf")
+        exit(1)
 
 # ================= CONFIG =================
 TREE_NAME = "EventTree"
 NBINS = 200
-
-# requested
 XLIM = (8.0, 15.0)
-
 MIN_RAW = 500
 MIN_ENTRIES = 200
 
+# ================= GRIDS =================
 QUARTZ_GRID = [
     [None,  "002", None,  None],
     ["006", "004", "206", "204"],
     ["016", "014", "216", "214"],
     ["026", "024", "226", "224"],
-    [None,  "030", None,  None],
-    [None,  "034", None,  None],
+    # [None,  "030", None,  None],
+    # [None,  "034", None,  None],
     ["106", "104", None, "304"],
-    ["116", "114", "316", "314"],
-    ["126", "124", "326", "324"],
-    [None,  "134", None,  "334"],
+    ["116", "114", None, "314"],
+    # ["126", "124", "326", "324"],
+    # [None,  "134", None,  "334"],
 ]
 
 PLASTIC_GRID = [
-    [None,  "000", "202", "200"],
-    ["012", "010", "212", "210"],
-    ["022", "020", "222", "220"],
-    ["032", None,  "232", "230"],
+    # [None,  "000", "202", "200"],
+    # ["012", "010", "212", "210"],
+    # ["022", "020", "222", "220"],
+    # ["032", None,  "232", "230"],
     ["102", "100", "302", "300"],
     ["112", "110", "312", "310"],
-    ["122", "120", "322", "320"],
-    ["132", "130", "332", "330"],
+    # ["122", "120", "322", "320"],
+    # ["132", "130", "332", "330"],
 ]
 
 CER_ALL_GRID = [
@@ -63,22 +74,22 @@ CER_ALL_GRID = [
 ]
 
 SCI_GRID = [
-    ["003", "001", "203", "201"],
-    ["007", "005", "207", "205"],
-    ["013", "011", "213", "211"],
-    ["017", "015", "217", "215"],
-    ["023", "021", "223", "221"],
-    ["027", "025", "227", "225"],
-    ["033", "031", "233", "231"],
-    [None,  "035", None,  "235"],
+    # ["003", "001", "203", "201"],
+    # ["007", "005", "207", "205"],
+    # ["013", "011", "213", "211"],
+    # ["017", "015", "217", "215"],
+    # ["023", "021", "223", "221"],
+    # ["027", "025", "227", "225"],
+    # ["033", "031", "233", "231"],
+    # [None,  "035", None,  "235"],
     ["103", "101", "303", "301"],
     ["107", "105", "307", "305"],
     ["113", "111", "313", "311"],
     ["117", "115", "317", "315"],
-    ["123", "121", "323", "321"],
-    ["127", "125", "327", "325"],
-    ["133", "131", "333", "331"],
-    [None,  "135", None,  "335"],
+    # ["123", "121", "323", "321"],
+    # ["127", "125", "327", "325"],
+    # ["133", "131", "333", "331"],
+    # [None,  "135", None,  "335"],
 ]
 
 FAMILIES = {
@@ -88,7 +99,6 @@ FAMILIES = {
     "CER-All": CER_ALL_GRID,
 }
 
-# Provided anchors
 ANCHORS = {
     "SCI": (1, 0, 7),
     "CER-Quartz": (1, 0, 4),
@@ -96,12 +106,6 @@ ANCHORS = {
 }
 
 # ================= HELPERS =================
-def save_calibration_json(outpath, meta, entries):
-    payload = {"meta": meta, "entries": entries}
-    with open(outpath, "w") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-    print("Saved JSON:", outpath)
-
 def _infer_run_label(path: str) -> str:
     base = os.path.basename(path)
     m = re.search(r"(run\d+_\d{11,12})", base)
@@ -129,7 +133,7 @@ def hist_stats(arr, bins):
     mode = float(0.5 * (edges[np.argmax(h)] + edges[np.argmax(h) + 1]))
     return mu, mode, h
 
-# ================= GAUSS FIT (anchor position) =================
+# ================= GAUSS FIT =================
 def _gauss(x, A, mu, sig):
     return A * np.exp(-0.5 * ((x - mu) / sig) ** 2)
 
@@ -159,15 +163,8 @@ def fit_gaussian_to_peak(arr_abs, bins, window=0.5):
     except Exception:
         return False, np.nan, np.nan, np.nan
 
-# ================= CALIBRATION (fixed anchor per family) =================
+# ================= CALIBRATION LOGIC =================
 def derive_family_calibration_fixed_anchor(root_file, grid, anchor_key, calib_stat="mode"):
-    """
-    calib_stat:
-      - "mean": shift = anchor_mu - mean(channel)
-      - "mode": shift = anchor_mu - mode(channel)
-
-    anchor_mu is taken from a Gaussian fit to the ANCHOR peak (fallback to anchor mean).
-    """
     if calib_stat not in ("mean", "mode"):
         raise ValueError(f"--calib-stat must be 'mean' or 'mode' (got {calib_stat})")
 
@@ -181,40 +178,31 @@ def derive_family_calibration_fixed_anchor(root_file, grid, anchor_key, calib_st
 
         for row in grid:
             for code in row:
-                if code is None:
-                    continue
-
+                if code is None: continue
                 b, g, c = parse_code(code)
                 k = branch_name(b, g, c)
-                if k not in keys:
-                    continue
+                if k not in keys: continue
 
                 raw = tree[k].array(library="np")
-                if raw.size < MIN_RAW:
-                    continue
-
+                if raw.size < MIN_RAW: continue
                 arr = prep_array(raw)
-                if arr is None:
-                    continue
+                if arr is None: continue
 
                 arrays[(b, g, c)] = arr
-
                 hstats = hist_stats(arr, bins)
-                if hstats is None:
-                    continue
+                if hstats is None: continue
                 mu, mode, _ = hstats
-
                 stats[(b, g, c)] = {"N": int(arr.size), "mu": float(mu), "mode": float(mode)}
 
     if anchor_key not in arrays or anchor_key not in stats:
-        raise RuntimeError(f"Anchor {anchor_key} not usable/found in this family for {root_file}")
+        print(f"WARNING: Anchor {anchor_key} not found in {root_file}. Skipping family calibration.")
+        dummy_info = {"mu": 0, "N":0, "fit_ok":False, "sig_fit":0, "calib_stat":calib_stat}
+        return {}, (anchor_key, dummy_info), {}
 
-    # Anchor peak position (Gaussian fit)
     anchor_arr = arrays[anchor_key]
     fit_ok, mu_fit, sig_fit, _A = fit_gaussian_to_peak(anchor_arr, bins, window=0.5)
     anchor_mu = float(mu_fit) if (fit_ok and np.isfinite(mu_fit)) else float(stats[anchor_key]["mu"])
 
-    # Compute shifts
     shifts = {}
     for key, st in stats.items():
         loc = st["mu"] if calib_stat == "mean" else st["mode"]
@@ -229,175 +217,218 @@ def derive_family_calibration_fixed_anchor(root_file, grid, anchor_key, calib_st
     }
     return shifts, (anchor_key, anchor_info), stats
 
-# ================= NEW: COLUMN-OVERLAY PLOTS =================
-def column_overlay_hists_to_pdf(pdf, root_file, grid, shifts, title, apply_shift=False):
-    """
-    For each column index in `grid`, overlay histograms for all channels in that column
-    on a single large plot (figsize 12x9). Linear y-scale. Draw mode per channel as
-    dashed vertical line, and include mode in legend.
-    """
+# ================= DATA PROCESSING =================
+def compute_test_mode_table(root_file, grid, shifts):
     bins = np.linspace(*XLIM, NBINS + 1)
-    centers = 0.5 * (bins[1:] + bins[:-1])
-
-    nrows = len(grid)
-    ncols = max(len(r) for r in grid)
+    rows = []
 
     with uproot.open(root_file) as f:
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        for cc in range(ncols):
-            # gather codes in this column (top-to-bottom)
-            codes = []
-            for rr in range(nrows):
-                if cc >= len(grid[rr]):
-                    continue
-                code = grid[rr][cc]
-                if code is not None:
-                    codes.append(code)
-
-            fig, ax = plt.subplots(figsize=(12, 9))
-            ax.set_title(f"{title}\nColumn {cc}  ({'POST shifted' if apply_shift else 'PRE raw'})", fontsize=14)
-
-            ax.set_xlim(*XLIM)
-            ax.set_xlabel(r"$|t_{\mathrm{final}}|$ [ns]")
-            ax.set_ylabel("Events")
-            ax.tick_params(direction="in", top=True, right=True)
-
-            any_plotted = False
-            ymax = 0
-
-            for code in codes:
+        for row in grid:
+            for code in row:
+                if code is None: continue
                 b, g, ch = parse_code(code)
                 k = branch_name(b, g, ch)
-                if k not in keys:
-                    continue
+                if k not in keys: continue
 
                 raw0 = tree[k].array(library="np")
-                if raw0.size < MIN_RAW:
-                    continue
-
+                if raw0.size < MIN_RAW: continue
                 arr = prep_array(raw0)
-                if arr is None:
-                    continue
+                if arr is None: continue
 
-                if apply_shift:
-                    arr = arr + shifts.get((b, g, ch), 0.0)
+                st_pre = hist_stats(arr, bins)
+                if st_pre is None: continue
+                _, mode_pre, _ = st_pre
 
-                st = hist_stats(arr, bins)
-                if st is None:
-                    continue
-                _mu, mode, h = st
-                ymax = max(ymax, int(h.max()))
+                shift_used = float(shifts.get((b, g, ch), 0.0))
+                arr_post = arr + shift_used
 
-                # plot hist
-                ln, = ax.step(centers, h, where="mid", lw=1.6,
-                              label=f"{code}  (mode={mode:.3f}, N={arr.size})")
-                # mode line in same color
-                ax.axvline(mode, color=ln.get_color(), linestyle="--", linewidth=1.8, alpha=0.95)
+                st_post = hist_stats(arr_post, bins)
+                if st_post is None: continue
+                _, mode_post, _ = st_post
 
-                any_plotted = True
+                rows.append({
+                    "code": code,
+                    "N": int(arr.size),
+                    "mode_pre": float(mode_pre),
+                    "mode_post": float(mode_post),
+                    "dmode_test": float(mode_post - mode_pre),
+                    "shift_used": float(shift_used),
+                })
+    return rows
 
-            if not any_plotted:
-                ax.text(0.5, 0.5, "No usable channels in this column (missing/low stats).",
-                        ha="center", va="center", transform=ax.transAxes, fontsize=14)
+def save_shifts_json(outpath, meta, shifts_by_family):
+    payload = {"meta": meta, "shifts_by_family": {}}
+    for fam, shifts in shifts_by_family.items():
+        d = {}
+        for (b, g, ch), s in shifts.items():
+            d[f"{b}_{g}_{ch}"] = float(s)
+        payload["shifts_by_family"][fam] = d
+    with open(outpath, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    print("Saved JSON:", outpath)
+
+def write_mode_shift_txt(outpath, tag, per_family_rows, calib_stat, ref_label, test_label):
+    def _format_float(x, w=9, p=3):
+        if x is None or not np.isfinite(x): return " " * (w - 1) + "—"
+        return f"{x:{w}.{p}f}"
+
+    with open(outpath, "w") as f:
+        f.write(f"{tag}\n")
+        f.write(f"reference_label={ref_label}\n")
+        f.write(f"test_label={test_label}\n")
+        f.write(f"XLIM={XLIM}, NBINS={NBINS}, MIN_RAW={MIN_RAW}, MIN_ENTRIES={MIN_ENTRIES}\n")
+        f.write(f"calib_stat={calib_stat}\n\n")
+
+        header = f"{'code':>5}  {'N':>8}  {'mode_pre':>9}  {'mode_post':>9}  {'dmode_test':>10}  {'shift_used':>10}\n"
+        sep = "-" * (len(header) - 1) + "\n"
+
+        for fam, rows in per_family_rows.items():
+            f.write(f"\n=== {fam} ===\n")
+            f.write(header)
+            f.write(sep)
+            
+            # --- SORTING LOGIC FOR TEXT FILE (BY GRID ORDER) ---
+            grid = FAMILIES.get(fam)
+            if grid:
+                flat_order = []
+                for row in grid:
+                    for code in row:
+                        if code is not None: flat_order.append(code)
+                order_map = {c: i for i, c in enumerate(flat_order)}
+                # Sort by index in grid; Put unknowns at end
+                rows = sorted(rows, key=lambda x: order_map.get(x['code'], 9999))
             else:
-                ax.set_ylim(0, max(1, int(1.15 * ymax)))
-                ax.legend(fontsize=9, frameon=False, ncol=1, loc="upper right")
+                rows = sorted(rows, key=lambda x: x['code'])
+            # ---------------------------------------------------
 
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
+            for r in rows:
+                f.write(
+                    f"{r['code']:>5}  {r['N']:8d}  "
+                    f"{_format_float(r['mode_pre'])}  "
+                    f"{_format_float(r['mode_post'])}  "
+                    f"{_format_float(r['dmode_test'], w=10)}  "
+                    f"{_format_float(r['shift_used'], w=10)}\n"
+                )
+    print("Saved TXT:", outpath)
 
+# ================= PLOTTING FUNCTIONS =================
 
-def row_overlay_hists_to_pdf(pdf, root_file, grid, shifts, title, apply_shift=False):
+def plot_family_summary_bars_figure(fam_name, rows, anchor_mu):
     """
-    For each ROW in `grid`, overlay histograms for all channel codes in that row
-    on a single large plot (figsize 12x9). Linear y-scale.
-    Draw mode per channel as dashed vertical line (same color as that channel),
-    and include mode + N in legend.
+    Returns a Figure object for the bar/residual plot.
+    Sorted by the order of channels in the defined GRIDs.
     """
+    if not rows: return None
+
+    # --- UPDATED SORTING LOGIC ---
+    grid = FAMILIES.get(fam_name)
+    if grid:
+        flat_order = []
+        for row in grid:
+            for code in row:
+                if code is not None:
+                    flat_order.append(code)
+        
+        order_map = {code: i for i, code in enumerate(flat_order)}
+        rows = sorted(rows, key=lambda x: order_map.get(x['code'], 9999))
+    else:
+        rows = sorted(rows, key=lambda x: x['code'])
+    # -----------------------------
+
+    codes = [r['code'] for r in rows]
+    modes = [r['mode_post'] for r in rows]
+    residuals = [m - anchor_mu for m in modes]
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True, 
+                                   gridspec_kw={'height_ratios': [3, 1]})
+    
+    bars = ax1.bar(codes, modes, color='skyblue', edgecolor='navy', alpha=0.7)
+    ax1.axhline(anchor_mu, color='red', linestyle='--', linewidth=2, 
+                label=f"Anchor Target ({anchor_mu:.3f} ns)")
+    ax1.set_ylabel("Mode TOA [ns]", fontsize=12)
+    ax1.set_title(f"Family Timing & Residuals: {fam_name}", fontsize=16, pad=20)
+    ax1.set_ylim(anchor_mu - 0.8, anchor_mu + 0.8)
+    ax1.grid(axis='y', linestyle=':', alpha=0.6)
+    ax1.legend(loc='upper left')
+
+    for bar in bars:
+        height = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                 f'{height:.2f}', ha='center', va='bottom', fontsize=7, rotation=90)
+
+    markerline, stemlines, baseline = ax2.stem(codes, residuals, linefmt='grey', markerfmt='o', basefmt=' ')
+    plt.setp(markerline, 'color', 'navy', 'markersize', 4)
+    plt.setp(stemlines, 'linewidth', 1, 'alpha', 0.5)
+    ax2.axhline(0, color='red', linestyle='-', linewidth=1, alpha=0.8)
+    ax2.set_ylabel(r"$\Delta$ (Mode - Anchor)", fontsize=10)
+    ax2.set_xlabel("Channel Code (Ordered by Grid)", fontsize=12)
+    
+    max_res = max(max(map(abs, residuals)), 0.1) if residuals else 0.1
+    ax2.set_ylim(-max_res * 1.2, max_res * 1.2)
+    ax2.grid(axis='y', linestyle='--', alpha=0.4)
+    ax2.set_xticks(range(len(codes)))
+    ax2.set_xticklabels(codes, rotation=45, ha='right', fontsize=9)
+    fig.tight_layout()
+    fig.subplots_adjust(hspace=0.05)
+    return fig
+
+def row_overlay_to_pdf_pages(pdf, root_file, grid, shifts, title, apply_shift):
     bins = np.linspace(*XLIM, NBINS + 1)
     centers = 0.5 * (bins[1:] + bins[:-1])
-
+    
     with uproot.open(root_file) as f:
         tree = f[TREE_NAME]
         keys = set(tree.keys())
-
+        
         for rr, row in enumerate(grid):
-            # keep only actual channels in this row
             codes = [code for code in row if code is not None]
-
             fig, ax = plt.subplots(figsize=(12, 9))
-
-            # show exactly which channels are overlaid
             codes_str = ", ".join(codes) if codes else "—"
-            ax.set_title(
-                f"{title}\nRow {rr}: [{codes_str}]  ({'POST shifted' if apply_shift else 'PRE raw'})",
-                fontsize=13
-            )
-
+            ax.set_title(f"{title}\nRow {rr}: [{codes_str}]", fontsize=13)
             ax.set_xlim(*XLIM)
             ax.set_xlabel(r"$|t_{\mathrm{final}}|$ [ns]")
             ax.set_ylabel("Events")
             ax.tick_params(direction="in", top=True, right=True)
-
+            
             any_plotted = False
             ymax = 0
-
             for code in codes:
                 b, g, ch = parse_code(code)
                 k = branch_name(b, g, ch)
-                if k not in keys:
-                    continue
-
+                if k not in keys: continue
                 raw0 = tree[k].array(library="np")
-                if raw0.size < MIN_RAW:
-                    continue
-
+                if raw0.size < MIN_RAW: continue
                 arr = prep_array(raw0)
-                if arr is None:
-                    continue
-
+                if arr is None: continue
                 if apply_shift:
                     arr = arr + shifts.get((b, g, ch), 0.0)
-
+                
                 st = hist_stats(arr, bins)
-                if st is None:
-                    continue
-
-                _mu, mode, h = st
+                if st is None: continue
+                _, mode, h = st
                 ymax = max(ymax, int(h.max()))
-
-                # hist line
-                ln, = ax.step(
-                    centers, h, where="mid", lw=1.8,
-                    label=f"{code}  (mode={mode:.3f}, N={arr.size})"
-                )
-
-                # mode dashed line same color as that channel curve
+                
+                ln, = ax.step(centers, h, where="mid", lw=1.8, label=f"{code} (mode={mode:.3f}, N={arr.size})")
                 ax.axvline(mode, color=ln.get_color(), linestyle="--", linewidth=2.0, alpha=0.95)
-
                 any_plotted = True
-
+            
             if not any_plotted:
-                ax.text(
-                    0.5, 0.5, "No usable channels in this row (missing/low stats).",
-                    ha="center", va="center", transform=ax.transAxes, fontsize=14
-                )
+                ax.text(0.5, 0.5, "No usable channels", ha="center", va="center", transform=ax.transAxes)
             else:
                 ax.set_ylim(0, max(1, int(1.15 * ymax)))
                 ax.legend(fontsize=10, frameon=False, loc="upper right")
-
+            
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
 
-# ================= PLOTTING (existing) =================
-def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
+# ================= LEGACY PLOTS (Defined but calls commented out) =================
+def mosaic_pre_post_to_pdf_pages(pdf, root_file, grid, shifts, title):
     bins = np.linspace(*XLIM, NBINS + 1)
     centers = 0.5 * (bins[1:] + bins[:-1])
-
     nrows = len(grid)
     ncols = max(len(r) for r in grid)
 
@@ -408,7 +439,6 @@ def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
         fig, axes = plt.subplots(nrows, ncols, figsize=(12, 2.2 * nrows), sharex=True, sharey=True)
         axes = np.atleast_2d(axes)
 
-        # compute global ymax
         global_ymax = 1
         cache = {}
         for r, row in enumerate(grid):
@@ -439,220 +469,280 @@ def mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts, title):
                     cache[(r, c)] = ("nostats", code)
                     continue
                 mu_post, mode_post, h_post = post_stats
-
                 global_ymax = max(global_ymax, int(h_pre.max()), int(h_post.max()))
                 cache[(r, c)] = ("ok", code, mu_pre, mu_post, mode_pre, mode_post, h_pre, h_post)
 
-        # draw
         ln1 = ln2 = None
         for r, row in enumerate(grid):
             for c, code in enumerate(row):
                 ax = axes[r, c]
-                if code is None:
-                    ax.axis("off")
-                    continue
-
-                ax.set_xlim(*XLIM)
-                ax.set_yscale("log")
-                ax.set_ylim(1, global_ymax * 1.15)
-                ax.tick_params(labelsize=8, direction="in", top=True, right=True)
-
                 entry = cache.get((r, c))
                 if entry is None:
                     ax.axis("off")
                     continue
-
                 status = entry[0]
                 if status != "ok":
-                    ax.text(0.5, 0.5, f"{entry[1]}\n({status})", ha="center", va="center",
-                            transform=ax.transAxes, fontsize=9)
+                    ax.text(0.5, 0.5, f"{entry[1]}\n({status})", ha="center", va="center", transform=ax.transAxes)
                     continue
-
                 _, code, mu_pre, mu_post, mode_pre, mode_post, h_pre, h_post = entry
-
-                ln1, = ax.step(centers, h_pre, where="mid", lw=1.0, alpha=0.70)
+                #ax.set_yscale("log")
+                ax.set_ylim(1, global_ymax * 1.15)
+                ln1, = ax.step(centers, h_pre, where="mid", lw=1.0, alpha=0.7)
                 ln2, = ax.step(centers, h_post, where="mid", lw=1.4, alpha=0.95)
-                ax.set_title(code, fontsize=9, pad=2)
-
-                # Mean lines (green, dashed)
-                ax.axvline(mu_pre,  color="green", linestyle="--", linewidth=1.2, alpha=0.65)
-                ax.axvline(mu_post, color="green", linestyle="--", linewidth=1.6, alpha=0.90)
-
-                # Mode lines (purple, dashed)
+                ax.set_title(code, fontsize=9)
                 ax.axvline(mode_pre,  color="purple", linestyle="--", linewidth=1.2, alpha=0.65)
                 ax.axvline(mode_post, color="purple", linestyle="--", linewidth=1.6, alpha=0.90)
 
-                txt = (f"μpre={mu_pre:.2f}\nμpost={mu_post:.2f}\n"
-                       f"mpre={mode_pre:.2f}\nmpost={mode_post:.2f}")
-                ax.text(0.02, 0.98, txt, transform=ax.transAxes,
-                        ha="left", va="top", fontsize=7,
-                        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.75, edgecolor="none"))
-
-        for ax in axes[-1, :]:
-            if ax.axison and ax.get_visible():
-                ax.set_xlabel(r"$|t_{\mathrm{final}}|$ [ns]")
-
-        fig.text(0.01, 0.5, "Events", va="center", rotation=90)
         fig.suptitle(title, fontsize=14)
-
-        if ln1 is not None and ln2 is not None:
-            fig.legend([ln1, ln2], ["PRE (raw)", "POST (shifted)"],
-                       loc="center left", bbox_to_anchor=(0.86, 0.5),
-                       fontsize=10, frameon=False)
-
-        fig.subplots_adjust(left=0.05, right=0.84, top=0.94, bottom=0.05, hspace=0.12, wspace=0.05)
+        if ln1 and ln2:
+            fig.legend([ln1, ln2], ["PRE", "POST"], loc="upper right")
         pdf.savefig(fig)
         plt.close(fig)
 
-def heatmap_to_pdf(pdf, root_file, grid, shifts, quantity, apply_shift, title):
-    """
-    Heatmap cell value = time of arrival (mean or mode) in ns.
-    quantity: "mean" or "mode"
-    apply_shift: False => PRE, True => POST
-    """
+def column_overlay_to_pdf_pages(pdf, root_file, grid, shifts, title, apply_shift):
+    bins = np.linspace(*XLIM, NBINS + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
     nrows = len(grid)
     ncols = max(len(r) for r in grid)
-    mat = np.full((nrows, ncols), np.nan, dtype=float)
-
-    bins = np.linspace(*XLIM, NBINS + 1)
 
     with uproot.open(root_file) as f:
         tree = f[TREE_NAME]
         keys = set(tree.keys())
 
-        for r, row in enumerate(grid):
-            for c, code in enumerate(row):
-                if code is None:
-                    continue
+        for cc in range(ncols):
+            codes = []
+            for rr in range(nrows):
+                if cc >= len(grid[rr]): continue
+                code = grid[rr][cc]
+                if code is not None: codes.append(code)
+
+            fig, ax = plt.subplots(figsize=(12, 9))
+            ax.set_title(f"{title}\nColumn {cc}", fontsize=14)
+            ax.set_xlim(*XLIM)
+            
+            any_plotted = False
+            ymax = 0
+            for code in codes:
                 b, g, ch = parse_code(code)
                 k = branch_name(b, g, ch)
-                if k not in keys:
-                    continue
-
-                arr = prep_array(tree[k].array(library="np"))
-                if arr is None:
-                    continue
-
+                if k not in keys: continue
+                raw0 = tree[k].array(library="np")
+                if raw0.size < MIN_RAW: continue
+                arr = prep_array(raw0)
+                if arr is None: continue
                 if apply_shift:
                     arr = arr + shifts.get((b, g, ch), 0.0)
-
+                
                 st = hist_stats(arr, bins)
-                if st is None:
-                    continue
-                mu, mode, _h = st
+                if st is None: continue
+                _, mode, h = st
+                ymax = max(ymax, int(h.max()))
+                ln, = ax.step(centers, h, where="mid", lw=1.6, label=f"{code} (mode={mode:.3f})")
+                ax.axvline(mode, color=ln.get_color(), linestyle="--", linewidth=1.8, alpha=0.95)
+                any_plotted = True
+            
+            if not any_plotted:
+                ax.text(0.5, 0.5, "No usable channels", ha="center", va="center", transform=ax.transAxes)
+            else:
+                ax.set_ylim(0, max(1, int(1.15 * ymax)))
+                ax.legend(loc="upper right")
+            pdf.savefig(fig)
+            plt.close(fig)
+
+def heatmap_to_pdf_pages(pdf, root_file, grid, shifts, quantity, apply_shift, title):
+    nrows = len(grid)
+    ncols = max(len(r) for r in grid)
+    mat = np.full((nrows, ncols), np.nan, dtype=float)
+    bins = np.linspace(*XLIM, NBINS + 1)
+
+    with uproot.open(root_file) as f:
+        tree = f[TREE_NAME]
+        keys = set(tree.keys())
+        for r, row in enumerate(grid):
+            for c, code in enumerate(row):
+                if code is None: continue
+                b, g, ch = parse_code(code)
+                k = branch_name(b, g, ch)
+                if k not in keys: continue
+                arr = prep_array(tree[k].array(library="np"))
+                if arr is None: continue
+                if apply_shift:
+                    arr = arr + shifts.get((b, g, ch), 0.0)
+                st = hist_stats(arr, bins)
+                if st is None: continue
+                mu, mode, _ = st
                 mat[r, c] = mu if quantity == "mean" else mode
 
-    vmin, vmax = XLIM
-
     fig, ax = plt.subplots(figsize=(12, 0.65 * nrows + 1.2))
-    im = ax.imshow(mat, origin="upper", aspect="auto", vmin=vmin, vmax=vmax)
-
+    im = ax.imshow(mat, origin="upper", aspect="auto", vmin=XLIM[0], vmax=XLIM[1])
+    
     for rr in range(nrows):
         for cc in range(ncols):
-            if cc >= len(grid[rr]) or grid[rr][cc] is None:
-                continue
-            code = grid[rr][cc]
+            if cc >= len(grid[rr]) or grid[rr][cc] is None: continue
             val = mat[rr, cc]
-            txt = f"{code}\n{val:.2f}" if np.isfinite(val) else f"{code}\n—"
+            txt = f"{grid[rr][cc]}\n{val:.2f}" if np.isfinite(val) else f"{grid[rr][cc]}\n—"
             ax.text(cc, rr, txt, ha="center", va="center", fontsize=8)
-
-    ax.set_xticks(range(ncols))
-    ax.set_yticks(range(nrows))
-    ax.set_xticklabels([""] * ncols)
-    ax.set_yticklabels([""] * nrows)
-    ax.tick_params(length=0)
-    cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label(f"{quantity}(|tfinal|) [ns]")
+            
+    fig.colorbar(im, ax=ax).set_label(f"{quantity} [ns]")
     ax.set_title(title)
-    fig.subplots_adjust(left=0.03, right=0.90, top=0.90, bottom=0.05)
-
     pdf.savefig(fig)
     plt.close(fig)
 
+# ================= MULTIPROCESSING WORKER =================
+def process_family_pdf(args_tuple):
+    """
+    Worker function executed by multiprocessing pool.
+    """
+    (fam_name, root_file, grid, shifts, tag, out_dir, is_test, anchor_mu, test_rows) = args_tuple
+    
+    pid = os.getpid()
+    safe_fam = fam_name.replace(" ", "_").replace("-", "_")
+    temp_pdf_name = os.path.join(out_dir, f"temp_{pid}_{safe_fam}_{'TEST' if is_test else 'REF'}.pdf")
+    
+    print(f"  [Worker {pid}] Processing {fam_name} ({'TEST' if is_test else 'REF'})...")
+
+    with PdfPages(temp_pdf_name) as pdf: 
+        fig_bar = plot_family_summary_bars_figure(fam_name, test_rows, anchor_mu)
+        if fig_bar:
+            pdf.savefig(fig_bar)
+            plt.close(fig_bar)
+    
+        # row_overlay_to_pdf_pages(pdf, root_file, grid, shifts, 
+        #                          f"{tag} — {fam_name} ROW overlays (Raw)", apply_shift=False)
+        
+        # row_overlay_to_pdf_pages(pdf, root_file, grid, shifts, 
+        #                          f"{tag} — {fam_name} ROW overlays (Shifted)", apply_shift=True)
+        
+        # --- LEGACY CALLS (Commented out per request) ---
+        mosaic_pre_post_to_pdf_pages(pdf, root_file, grid, shifts, f"{tag} Mosaic")
+        # column_overlay_to_pdf_pages(pdf, root_file, grid, shifts, f"{tag} Cols Raw", False)
+        # column_overlay_to_pdf_pages(pdf, root_file, grid, shifts, f"{tag} Cols Shifted", True)
+        heatmap_to_pdf_pages(pdf, root_file, grid, shifts, "mode", True, f"{tag} Heatmap")
+
+    return temp_pdf_name
+def merge_pdfs(output_path, input_paths):
+    merger = PdfWriter()
+    valid_files = 0
+    for path in input_paths:
+        # 1. Check if file exists and is not empty
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+             print(f"WARNING: Skipping empty or missing file: {path}")
+             continue
+        
+        # 2. Try to read the PDF
+        try:
+            with open(path, "rb") as f:
+                reader = PdfReader(f)
+                # 3. Check if it actually has pages
+                if len(reader.pages) > 0:
+                     for page in reader.pages:
+                        merger.add_page(page)
+                     valid_files += 1
+                else:
+                     print(f"WARNING: File has no pages: {path}")
+        except Exception as e:
+            print(f"WARNING: Failed to read {path}. Error: {e}")
+            continue
+
+    if valid_files > 0:
+        with open(output_path, "wb") as f_out:
+            merger.write(f_out)
+        print(f"Merged PDF saved to: {output_path}")
+    else:
+        print(f"WARNING: No valid pages found. PDF not saved: {output_path}")
 # ================= MAIN =================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reference", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1501_250928105227_converted_timingskim.root")
     ap.add_argument("--test", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1511_250928180741_converted_timingskim.root")
     ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/calibration_studiesZ/MODE_CALIB_OUTPUT")
-    ap.add_argument("--calib-stat", choices=["mean", "mode"], default="mode",
-                    help="Use channel mean or histogram mode when computing shifts (anchor uses Gaussian-fit peak).")
+    ap.add_argument("--calib-stat", choices=["mean", "mode"], default="mode")
+    ap.add_argument("--workers", type=int, default=min(4, os.cpu_count()), help="Number of parallel processes")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
-
     ref_label = _infer_run_label(args.reference)
     test_label = _infer_run_label(args.test)
-
     suffix = f"calib_{args.calib_stat}"
-    ref_pdf_path = os.path.join(args.outdir, f"REF_file_{ref_label}_{suffix}.pdf")
-    test_pdf_path = os.path.join(args.outdir, f"TEST_file_{test_label}_{suffix}.pdf")
 
-    # --- Derive shifts from reference using fixed anchors per calibration family
+    # --- 1. Derive shifts (Serial) ---
+    print("Deriving Calibration Shifts...")
     shifts_by_family = {}
+    anchor_targets = {}
+    
     for fam in ["CER-Quartz", "CER-Plastic", "SCI"]:
-        grid = FAMILIES[fam]
-        anchor_key = ANCHORS[fam]
-        shifts, anchor, stats = derive_family_calibration_fixed_anchor(
-            args.reference, grid, anchor_key, calib_stat=args.calib_stat
+        s, a_info, _ = derive_family_calibration_fixed_anchor(
+            args.reference, FAMILIES[fam], ANCHORS[fam], args.calib_stat
         )
-        shifts_by_family[fam] = shifts
-        akey, ainfo = anchor
-        print(f"[{fam}] anchor={akey}  mu={ainfo['mu']:.4f}  N={ainfo['N']}  fit_ok={ainfo['fit_ok']}  sig_fit={ainfo['sig_fit']:.3f}  calib_stat={ainfo['calib_stat']}")
+        shifts_by_family[fam] = s
+        anchor_targets[fam] = a_info[1]['mu'] 
+        
+    shifts_by_family["CER-All"] = {**shifts_by_family["CER-Quartz"], **shifts_by_family["CER-Plastic"]}
+    anchor_targets["CER-All"] = anchor_targets["CER-Quartz"]
 
-    # CER-All shifts = Quartz + Plastic shifts
-    shifts_cer_all = {}
-    shifts_cer_all.update(shifts_by_family["CER-Quartz"])
-    shifts_cer_all.update(shifts_by_family["CER-Plastic"])
-    shifts_by_family["CER-All"] = shifts_cer_all
+    # --- 2. Save JSON ---
+    shifts_json_path = os.path.join(args.outdir, f"shifts_{ref_label}_{suffix}.json")
+    meta = {
+        "reference": args.reference, "calib_stat": args.calib_stat, 
+        "families": list(shifts_by_family.keys())
+    }
+    save_shifts_json(shifts_json_path, meta, shifts_by_family)
 
-    def write_all_pages(pdf, root_file, tag):
-        for fam in ["CER-Quartz", "CER-Plastic", "SCI", "CER-All"]:
-            grid = FAMILIES[fam]
-            shifts = shifts_by_family[fam]
+    # --- 3. Compute Test Stats (Serial) ---
+    print("Computing Test Statistics...")
+    per_family_test_rows = {}
+    for fam in FAMILIES.keys():
+        per_family_test_rows[fam] = compute_test_mode_table(args.test, FAMILIES[fam], shifts_by_family[fam])
 
-            # mosaic_pre_post_to_pdf(pdf, root_file, grid, shifts,
-                                #    title=f"{tag} — {fam} mosaic PRE vs POST")
+    # --- 4. Save Text Table ---
+    test_txt_path = os.path.join(args.outdir, f"TEST_mode_shift_table_{test_label}_{suffix}.txt")
+    write_mode_shift_txt(test_txt_path, f"TEST {test_label}", per_family_test_rows, 
+                         args.calib_stat, ref_label, test_label)
 
-            # NEW: column overlays (PRE and POST) with per-channel mode lines + legend
-            # column_overlay_hists_to_pdf(
-            #     pdf, root_file, grid, shifts,
-            #     title=f"{tag} — {fam} COLUMN overlays (mode dashed per channel)",
-            #     apply_shift=False
-            # )
-            # column_overlay_hists_to_pdf(
-            #     pdf, root_file, grid, shifts,
-            #     title=f"{tag} — {fam} COLUMN overlays (mode dashed per channel)",
-            #     apply_shift=True
-            # )
+    # --- 5. Multiprocessing Plot Generation ---
+    fam_list = ["CER-Quartz", "CER-Plastic", "SCI", "CER-All"]
+    
+    tasks_ref = []
+    for fam in fam_list:
+        tasks_ref.append((
+            fam, args.reference, FAMILIES[fam], shifts_by_family[fam],
+            f"REF {ref_label}", args.outdir, False, 0.0, None
+        ))
 
-            # NEW: row overlays (the 4-per-row like ["006","004","206","204"])
-            row_overlay_hists_to_pdf(
-                pdf, root_file, grid, shifts,
-                title=f"{tag} — {fam} ROW overlays (mode dashed per channel)",
-                apply_shift=False
-            )
-            row_overlay_hists_to_pdf(
-                pdf, root_file, grid, shifts,
-                title=f"{tag} — {fam} ROW overlays (mode dashed per channel)",
-                apply_shift=True
-)
+    tasks_test = []
+    for fam in fam_list:
+        tasks_test.append((
+            fam, args.test, FAMILIES[fam], shifts_by_family[fam],
+            f"TEST {test_label}", args.outdir, True, anchor_targets[fam], per_family_test_rows[fam]
+        ))
 
+    print(f"Starting PDF generation with {args.workers} workers...")
+    
+    with multiprocessing.Pool(args.workers) as pool:
+        print(" -> Generating Reference pages...")
+        ref_temp_files = pool.map(process_family_pdf, tasks_ref)
+        
+        print(" -> Generating Test pages...")
+        test_temp_files = pool.map(process_family_pdf, tasks_test)
 
-            # for qty in ["mean", "mode"]:
-            #     heatmap_to_pdf(pdf, root_file, grid, shifts, quantity=qty, apply_shift=False,
-            #                    title=f"{tag} — {fam} heatmap {qty} PRE")
-            #     heatmap_to_pdf(pdf, root_file, grid, shifts, quantity=qty, apply_shift=True,
-            #                    title=f"{tag} — {fam} heatmap {qty} POST")
+    # --- 6. Merge and Cleanup ---
+    final_ref_pdf = os.path.join(args.outdir, f"REF_file_{ref_label}_{suffix}.pdf")
+    final_test_pdf = os.path.join(args.outdir, f"TEST_file_{test_label}_{suffix}.pdf")
 
-    with PdfPages(ref_pdf_path) as pdf:
-        write_all_pages(pdf, args.reference, tag=f"REFERENCE {ref_label} ({suffix})")
+    print("Merging Reference PDF...")
+    merge_pdfs(final_ref_pdf, ref_temp_files)
+    
+    print("Merging Test PDF...")
+    merge_pdfs(final_test_pdf, test_temp_files)
 
-    with PdfPages(test_pdf_path) as pdf:
-        write_all_pages(pdf, args.test, tag=f"TEST {test_label} (calib from {ref_label}; {suffix})")
+    print("Cleaning up temp files...")
+    for f in ref_temp_files + test_temp_files:
+        if os.path.exists(f):
+            os.remove(f)
 
-    print("Saved:", ref_pdf_path)
-    print("Saved:", test_pdf_path)
+    print("Done!")
+    print(f"Ref PDF: {final_ref_pdf}")
+    print(f"Test PDF: {final_test_pdf}")
 
 if __name__ == "__main__":
     main()
