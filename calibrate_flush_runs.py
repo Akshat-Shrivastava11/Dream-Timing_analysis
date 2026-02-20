@@ -315,189 +315,470 @@ def write_mode_shift_txt(outpath, tag, per_family_rows, calib_stat, ref_label, t
     print("Saved TXT:", outpath)
 
 # ================= PLOTTING FUNCTIONS =================
-
-def plot_family_summary_bars_figure(fam_name, rows, anchor_mu):
+def plot_family_summary_bars_figure(fam_name, multi_run_data):
     """
-    Returns a Figure object for the bar/residual plot.
-    Sorted by the order of channels in the defined GRIDs.
+    Plots grouped bars for multiple test runs on the same figure.
+    multi_run_data is a list of dicts: {'label':..., 'rows':..., 'anchor':..., 'color':...}
     """
-    if not rows: return None
+    if not multi_run_data:
+        return None
 
-    # --- UPDATED SORTING LOGIC ---
+    # --- 1. DETERMINE SORT ORDER (Based on Grid) ---
     grid = FAMILIES.get(fam_name)
     if grid:
         flat_order = []
         for row in grid:
             for code in row:
-                if code is not None:
-                    flat_order.append(code)
-        
+                if code is not None: flat_order.append(code)
         order_map = {code: i for i, code in enumerate(flat_order)}
-        rows = sorted(rows, key=lambda x: order_map.get(x['code'], 9999))
     else:
-        rows = sorted(rows, key=lambda x: x['code'])
-    # -----------------------------
+        # Fallback: get all codes from data
+        all_codes = set()
+        for item in multi_run_data:
+            for r in item['rows']:
+                all_codes.add(r['code'])
+        flat_order = sorted(list(all_codes))
+        order_map = {c: i for i, c in enumerate(flat_order)}
 
-    codes = [r['code'] for r in rows]
-    modes = [r['mode_post'] for r in rows]
-    residuals = [m - anchor_mu for m in modes]
+    # Collect all codes present in the data
+    present_codes = set()
+    for item in multi_run_data:
+        for r in item['rows']:
+            present_codes.add(r['code'])
     
+    # Sort them according to the grid order
+    sorted_codes = sorted(list(present_codes), key=lambda x: order_map.get(x, 9999))
+    if not sorted_codes: return None
+
+    # --- 2. SETUP PLOT ---
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True, 
                                    gridspec_kw={'height_ratios': [3, 1]})
     
-    bars = ax1.bar(codes, modes, color='skyblue', edgecolor='navy', alpha=0.7)
-    ax1.axhline(anchor_mu, color='red', linestyle='--', linewidth=2, 
-                label=f"Anchor Target ({anchor_mu:.3f} ns)")
+    n_runs = len(multi_run_data)
+    total_width = 0.8
+    bar_width = total_width / n_runs
+    indices = np.arange(len(sorted_codes))
+    
+    # Define a color cycle
+    default_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2']
+
+    min_y, max_y = 999, -999
+
+    # --- 3. LOOP OVER RUNS ---
+    for i, run_item in enumerate(multi_run_data):
+        label = run_item['label']
+        rows = run_item['rows']
+        anchor_val = run_item['anchor']
+        # Use provided color or cycle through defaults
+        color = run_item.get('color', default_colors[i % len(default_colors)])
+        
+        # Map this run's data to the sorted codes
+        row_map = {r['code']: r['mode_post'] for r in rows}
+        modes = [row_map.get(c, np.nan) for c in sorted_codes]
+        residuals = [m - anchor_val if np.isfinite(m) else np.nan for m in modes]
+
+        # Calculate offset to place bars side-by-side
+        offset = (i - (n_runs - 1) / 2) * bar_width
+        
+        # A. Bar Chart
+        ax1.bar(indices + offset, modes, width=bar_width, label=label, 
+                color=color, alpha=0.65, edgecolor='black', linewidth=0.5)
+        
+        # B. Anchor Line (Dashed) - Unique for each run
+        ax1.axhline(anchor_val, color=color, linestyle='--', linewidth=1.5, alpha=0.8,
+                    label=f"{label} Anchor ({anchor_val:.2f})")
+
+        # Track min/max for scaling
+        valid_modes = [m for m in modes if np.isfinite(m)]
+        if valid_modes:
+            min_y = min(min_y, min(valid_modes))
+            max_y = max(max_y, max(valid_modes))
+
+        # C. Residuals
+        ax2.scatter(indices + offset, residuals, color=color, marker='o', s=30)
+        ax2.axhline(0, color='black', linestyle='-', linewidth=0.5, alpha=0.3)
+
+    # --- 4. FORMATTING ---
+    margin = 0.6
+    if min_y != 999:
+        ax1.set_ylim(min_y - margin, max_y + margin)
+    
     ax1.set_ylabel("Mode TOA [ns]", fontsize=12)
     ax1.set_title(f"Family Timing & Residuals: {fam_name}", fontsize=16, pad=20)
-    ax1.set_ylim(anchor_mu - 0.8, anchor_mu + 0.8)
     ax1.grid(axis='y', linestyle=':', alpha=0.6)
-    ax1.legend(loc='upper left')
-
-    for bar in bars:
-        height = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                 f'{height:.2f}', ha='center', va='bottom', fontsize=7, rotation=90)
-
-    markerline, stemlines, baseline = ax2.stem(codes, residuals, linefmt='grey', markerfmt='o', basefmt=' ')
-    plt.setp(markerline, 'color', 'navy', 'markersize', 4)
-    plt.setp(stemlines, 'linewidth', 1, 'alpha', 0.5)
-    ax2.axhline(0, color='red', linestyle='-', linewidth=1, alpha=0.8)
-    ax2.set_ylabel(r"$\Delta$ (Mode - Anchor)", fontsize=10)
-    ax2.set_xlabel("Channel Code (Ordered by Grid)", fontsize=12)
     
-    max_res = max(max(map(abs, residuals)), 0.1) if residuals else 0.1
-    ax2.set_ylim(-max_res * 1.2, max_res * 1.2)
+    # Legend: 2 columns to fit bar labels and anchor labels
+    ax1.legend(loc='upper left', fontsize=8, ncol=2, framealpha=0.9)
+
+    ax2.set_ylabel(r"$\Delta$ (Mode - Run Anchor)", fontsize=10)
+    ax2.set_xlabel("Channel Code (Ordered by Grid)", fontsize=12)
     ax2.grid(axis='y', linestyle='--', alpha=0.4)
-    ax2.set_xticks(range(len(codes)))
-    ax2.set_xticklabels(codes, rotation=45, ha='right', fontsize=9)
+    ax2.set_xticks(indices)
+    ax2.set_xticklabels(sorted_codes, rotation=45, ha='right', fontsize=9)
+    ax2.set_xlim(-0.6, len(sorted_codes) - 0.4)
+
+    # Symmetric Y limits for residuals
+    y_limits = ax2.get_ylim()
+    max_res = max(abs(y_limits[0]), abs(y_limits[1]), 0.1)
+    ax2.set_ylim(-max_res*1.15, max_res*1.15)
+
     fig.tight_layout()
     fig.subplots_adjust(hspace=0.05)
+    
     return fig
 
-def row_overlay_to_pdf_pages(pdf, root_file, grid, shifts, title, apply_shift):
-    bins = np.linspace(*XLIM, NBINS + 1)
-    centers = 0.5 * (bins[1:] + bins[:-1])
+def plot_family_summary_bars_figure(fam_name, multi_run_data):
+    """
+    Plots grouped bars for multiple test runs on the same figure,
+    AND generates individual plots for each run.
     
-    with uproot.open(root_file) as f:
-        tree = f[TREE_NAME]
-        keys = set(tree.keys())
-        
-        for rr, row in enumerate(grid):
-            codes = [code for code in row if code is not None]
-            fig, ax = plt.subplots(figsize=(12, 9))
-            codes_str = ", ".join(codes) if codes else "—"
-            ax.set_title(f"{title}\nRow {rr}: [{codes_str}]", fontsize=13)
-            ax.set_xlim(*XLIM)
-            ax.set_xlabel(r"$|t_{\mathrm{final}}|$ [ns]")
-            ax.set_ylabel("Events")
-            ax.tick_params(direction="in", top=True, right=True)
-            
-            any_plotted = False
-            ymax = 0
-            for code in codes:
-                b, g, ch = parse_code(code)
-                k = branch_name(b, g, ch)
-                if k not in keys: continue
-                raw0 = tree[k].array(library="np")
-                if raw0.size < MIN_RAW: continue
-                arr = prep_array(raw0)
-                if arr is None: continue
-                if apply_shift:
-                    arr = arr + shifts.get((b, g, ch), 0.0)
-                
-                st = hist_stats(arr, bins)
-                if st is None: continue
-                _, mode, h = st
-                ymax = max(ymax, int(h.max()))
-                
-                ln, = ax.step(centers, h, where="mid", lw=1.8, label=f"{code} (mode={mode:.3f}, N={arr.size})")
-                ax.axvline(mode, color=ln.get_color(), linestyle="--", linewidth=2.0, alpha=0.95)
-                any_plotted = True
-            
-            if not any_plotted:
-                ax.text(0.5, 0.5, "No usable channels", ha="center", va="center", transform=ax.transAxes)
-            else:
-                ax.set_ylim(0, max(1, int(1.15 * ymax)))
-                ax.legend(fontsize=10, frameon=False, loc="upper right")
-            
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
+    Returns:
+        List[plt.Figure]: A list containing [Overlay_Figure, Run1_Figure, Run2_Figure, ...]
+    """
+    if not multi_run_data:
+        return []
 
+    generated_figures = []
+
+    # --- 1. DETERMINE SORT ORDER (Based on Grid) ---
+    grid = FAMILIES.get(fam_name)
+    if grid:
+        flat_order = []
+        for row in grid:
+            for code in row:
+                if code is not None: flat_order.append(code)
+        order_map = {code: i for i, code in enumerate(flat_order)}
+    else:
+        # Fallback: get all codes from data
+        all_codes = set()
+        for item in multi_run_data:
+            for r in item['rows']:
+                all_codes.add(r['code'])
+        flat_order = sorted(list(all_codes))
+        order_map = {c: i for i, c in enumerate(flat_order)}
+
+    # Collect all codes present in the data
+    present_codes = set()
+    for item in multi_run_data:
+        for r in item['rows']:
+            present_codes.add(r['code'])
+    
+    # Sort them according to the grid order
+    sorted_codes = sorted(list(present_codes), key=lambda x: order_map.get(x, 9999))
+    if not sorted_codes: return []
+
+    indices = np.arange(len(sorted_codes))
+    default_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2']
+
+    # ==========================================
+    # A. GENERATE OVERLAY PLOT (All Runs)
+    # ==========================================
+    fig_overlay, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True, 
+                                           gridspec_kw={'height_ratios': [3, 1]})
+    
+    n_runs = len(multi_run_data)
+    total_width = 0.8
+    bar_width = total_width / n_runs
+    
+    min_y, max_y = 999, -999
+
+    for i, run_item in enumerate(multi_run_data):
+        label = run_item['label']
+        rows = run_item['rows']
+        anchor_val = run_item['anchor']
+        color = run_item.get('color', default_colors[i % len(default_colors)])
+        
+        # Save color back to item for consistency in single plots
+        run_item['color'] = color 
+
+        row_map = {r['code']: r['mode_post'] for r in rows}
+        modes = [row_map.get(c, np.nan) for c in sorted_codes]
+        residuals = [m - anchor_val if np.isfinite(m) else np.nan for m in modes]
+
+        offset = (i - (n_runs - 1) / 2) * bar_width
+        
+        # Bars
+        ax1.bar(indices + offset, modes, width=bar_width, label=label, 
+                color=color, alpha=0.65, edgecolor='black', linewidth=0.5)
+        
+        # Anchor
+        ax1.axhline(anchor_val, color=color, linestyle='--', linewidth=1.5, alpha=0.8,
+                    label=f"{label} Anchor")
+
+        valid_modes = [m for m in modes if np.isfinite(m)]
+        if valid_modes:
+            min_y = min(min_y, min(valid_modes))
+            max_y = max(max_y, max(valid_modes))
+
+        # Residuals
+        ax2.scatter(indices + offset, residuals, color=color, marker='o', s=30)
+        ax2.axhline(0, color='black', linestyle='-', linewidth=0.5, alpha=0.3)
+
+    # Format Overlay
+    margin = 0.6
+    if min_y != 999: ax1.set_ylim(min_y - margin, max_y + margin)
+    ax1.set_ylabel("Mode TOA [ns]", fontsize=12)
+    ax1.set_title(f"Family Timing & Residuals: {fam_name} (OVERLAY)", fontsize=16, pad=20)
+    ax1.grid(axis='y', linestyle=':', alpha=0.6)
+    ax1.legend(loc='upper left', fontsize=8, ncol=2, framealpha=0.9)
+    ax2.set_ylabel(r"$\Delta$ (Mode - Anchor)", fontsize=10)
+    ax2.set_xlabel("Channel Code (Ordered by Grid)", fontsize=12)
+    ax2.grid(axis='y', linestyle='--', alpha=0.4)
+    ax2.set_xticks(indices)
+    ax2.set_xticklabels(sorted_codes, rotation=45, ha='right', fontsize=9)
+    ax2.set_xlim(-0.6, len(sorted_codes) - 0.4)
+    y_limits = ax2.get_ylim()
+    max_res = max(abs(y_limits[0]), abs(y_limits[1]), 0.1)
+    ax2.set_ylim(-max_res*1.15, max_res*1.15)
+    fig_overlay.tight_layout()
+    fig_overlay.subplots_adjust(hspace=0.05)
+    
+    generated_figures.append(fig_overlay)
+
+    # ==========================================
+    # B. GENERATE INDIVIDUAL PLOTS (One per Run)
+    # ==========================================
+    for run_item in multi_run_data:
+        label = run_item['label']
+        rows = run_item['rows']
+        anchor_val = run_item['anchor']
+        color = run_item.get('color', 'blue') # Use stored color
+        
+        fig_single, (sax1, sax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True, 
+                                                gridspec_kw={'height_ratios': [3, 1]})
+        
+        row_map = {r['code']: r['mode_post'] for r in rows}
+        modes = [row_map.get(c, np.nan) for c in sorted_codes]
+        residuals = [m - anchor_val if np.isfinite(m) else np.nan for m in modes]
+
+        # Single Bar (Centered, Full Width)
+        sax1.bar(indices, modes, width=0.7, label=label, 
+                 color=color, alpha=0.7, edgecolor='black', linewidth=0.8)
+        
+        sax1.axhline(anchor_val, color='red', linestyle='--', linewidth=2.0, alpha=0.9,
+                     label=f"Anchor ({anchor_val:.2f} ns)")
+
+        # Single Residuals
+        # Use stem plot for single run as it looks cleaner than scatter
+        markerline, stemlines, baseline = sax2.stem(indices, residuals, linefmt='grey', markerfmt='o')
+        plt.setp(markerline, 'color', color, 'markersize', 5)
+        plt.setp(stemlines, 'linewidth', 1, 'alpha', 0.6)
+        sax2.axhline(0, color='red', linestyle='-', linewidth=1, alpha=0.5)
+
+        # Format Single
+        s_min_y, s_max_y = 999, -999
+        valid_modes = [m for m in modes if np.isfinite(m)]
+        if valid_modes:
+            s_min_y = min(valid_modes)
+            s_max_y = max(valid_modes)
+            sax1.set_ylim(s_min_y - margin, s_max_y + margin)
+
+        sax1.set_ylabel("Mode TOA [ns]", fontsize=12)
+        sax1.set_title(f"Family Timing: {fam_name} - {label}", fontsize=16, pad=20)
+        sax1.grid(axis='y', linestyle=':', alpha=0.6)
+        sax1.legend(loc='upper left', fontsize=10)
+        
+        sax2.set_ylabel(r"$\Delta$ (Mode - Anchor)", fontsize=10)
+        sax2.set_xlabel("Channel Code", fontsize=12)
+        sax2.grid(axis='y', linestyle='--', alpha=0.4)
+        sax2.set_xticks(indices)
+        sax2.set_xticklabels(sorted_codes, rotation=45, ha='right', fontsize=9)
+        sax2.set_xlim(-0.6, len(sorted_codes) - 0.4)
+        
+        # Auto Scale Residuals Y
+        s_max_res = max(max([abs(r) for r in residuals if np.isfinite(r)] + [0.1]), 0.1)
+        sax2.set_ylim(-s_max_res*1.2, s_max_res*1.2)
+
+        fig_single.tight_layout()
+        fig_single.subplots_adjust(hspace=0.05)
+        
+        generated_figures.append(fig_single)
+
+    return generated_figures
 # ================= LEGACY PLOTS (Defined but calls commented out) =================
-def mosaic_pre_post_to_pdf_pages(pdf, root_file, grid, shifts, title):
+def mosaic_pre_post_to_pdf_pages(pdf, root_files, grid, shifts, title_prefix):
+    """
+    Generates a Mosaic Plot (Pre vs Post shift) for EACH file in root_files.
+    """
     bins = np.linspace(*XLIM, NBINS + 1)
     centers = 0.5 * (bins[1:] + bins[:-1])
     nrows = len(grid)
     ncols = max(len(r) for r in grid)
 
-    with uproot.open(root_file) as f:
-        tree = f[TREE_NAME]
-        keys = set(tree.keys())
+    # Loop through each file to create a separate page/mosaic for it
+    for fpath in root_files:
+        run_label = _infer_run_label(fpath)
+        full_title = f"{title_prefix} - {run_label}"
 
-        fig, axes = plt.subplots(nrows, ncols, figsize=(12, 2.2 * nrows), sharex=True, sharey=True)
-        axes = np.atleast_2d(axes)
+        try:
+            with uproot.open(fpath) as f:
+                if TREE_NAME not in f: continue
+                tree = f[TREE_NAME]
+                keys = set(tree.keys())
 
-        global_ymax = 1
-        cache = {}
-        for r, row in enumerate(grid):
-            for c, code in enumerate(row):
-                if code is None:
-                    cache[(r, c)] = None
-                    continue
-                b, g, ch = parse_code(code)
-                k = branch_name(b, g, ch)
-                if k not in keys:
-                    cache[(r, c)] = ("missing", code)
-                    continue
+                fig, axes = plt.subplots(nrows, ncols, figsize=(12, 2.2 * nrows), sharex=True, sharey=True)
+                axes = np.atleast_2d(axes)
 
-                raw = prep_array(tree[k].array(library="np"))
-                if raw is None:
-                    cache[(r, c)] = ("nostats", code)
-                    continue
+                global_ymax = 1
+                cache = {}
+                
+                # 1. Collect Data
+                for r, row in enumerate(grid):
+                    for c, code in enumerate(row):
+                        if code is None:
+                            cache[(r, c)] = None
+                            continue
+                        b, g, ch = parse_code(code)
+                        k = branch_name(b, g, ch)
+                        
+                        if k not in keys:
+                            cache[(r, c)] = ("missing", code)
+                            continue
 
-                pre_stats = hist_stats(raw, bins)
-                if pre_stats is None:
-                    cache[(r, c)] = ("nostats", code)
-                    continue
-                mu_pre, mode_pre, h_pre = pre_stats
+                        raw = prep_array(tree[k].array(library="np"))
+                        if raw is None:
+                            cache[(r, c)] = ("nostats", code)
+                            continue
 
-                post = raw + shifts.get((b, g, ch), 0.0)
-                post_stats = hist_stats(post, bins)
-                if post_stats is None:
-                    cache[(r, c)] = ("nostats", code)
-                    continue
-                mu_post, mode_post, h_post = post_stats
-                global_ymax = max(global_ymax, int(h_pre.max()), int(h_post.max()))
-                cache[(r, c)] = ("ok", code, mu_pre, mu_post, mode_pre, mode_post, h_pre, h_post)
+                        pre_stats = hist_stats(raw, bins)
+                        if pre_stats is None:
+                            cache[(r, c)] = ("nostats", code)
+                            continue
+                        mu_pre, mode_pre, h_pre = pre_stats
 
-        ln1 = ln2 = None
-        for r, row in enumerate(grid):
-            for c, code in enumerate(row):
-                ax = axes[r, c]
-                entry = cache.get((r, c))
-                if entry is None:
-                    ax.axis("off")
-                    continue
-                status = entry[0]
-                if status != "ok":
-                    ax.text(0.5, 0.5, f"{entry[1]}\n({status})", ha="center", va="center", transform=ax.transAxes)
-                    continue
-                _, code, mu_pre, mu_post, mode_pre, mode_post, h_pre, h_post = entry
-                #ax.set_yscale("log")
-                ax.set_ylim(1, global_ymax * 1.15)
-                ln1, = ax.step(centers, h_pre, where="mid", lw=1.0, alpha=0.7)
-                ln2, = ax.step(centers, h_post, where="mid", lw=1.4, alpha=0.95)
-                ax.set_title(code, fontsize=9)
-                ax.axvline(mode_pre,  color="purple", linestyle="--", linewidth=1.2, alpha=0.65)
-                ax.axvline(mode_post, color="purple", linestyle="--", linewidth=1.6, alpha=0.90)
+                        # Apply Shift
+                        shift_val = shifts.get((b, g, ch), 0.0)
+                        post = raw + shift_val
+                        post_stats = hist_stats(post, bins)
+                        
+                        if post_stats is None:
+                            cache[(r, c)] = ("nostats", code)
+                            continue
+                        mu_post, mode_post, h_post = post_stats
+                        
+                        global_ymax = max(global_ymax, int(h_pre.max()), int(h_post.max()))
+                        cache[(r, c)] = ("ok", code, mode_pre, mode_post, h_pre, h_post, shift_val)
 
-        fig.suptitle(title, fontsize=14)
-        if ln1 and ln2:
-            fig.legend([ln1, ln2], ["PRE", "POST"], loc="upper right")
-        pdf.savefig(fig)
-        plt.close(fig)
+                # 2. Plot Data
+                ln1 = ln2 = None
+                for r, row in enumerate(grid):
+                    for c, code in enumerate(row):
+                        if c >= len(axes[r]): continue 
+                        ax = axes[r, c]
+                        
+                        entry = cache.get((r, c))
+                        if entry is None:
+                            ax.axis("off")
+                            continue
+                        
+                        status = entry[0]
+                        if status != "ok":
+                            ax.text(0.5, 0.5, f"{entry[1]}\n({status})", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+                            continue
+                        
+                        _, code, mode_pre, mode_post, h_pre, h_post, shift = entry
+                        
+                        # Plot Pre (Blue) and Post (Orange)
+                        ln1, = ax.step(centers, h_pre, where="mid", lw=1.0, alpha=0.6, color='tab:blue')
+                        ln2, = ax.step(centers, h_post, where="mid", lw=1.2, alpha=0.9, color='tab:orange')
+                        
+                        ax.set_ylim(0, global_ymax * 1.15)
+                        ax.set_title(f"{code} (s={shift:.2f})", fontsize=8, pad=1)
+                        
+                        # Vertical lines for Mode
+                        ax.axvline(mode_pre, color='blue', ls=':', lw=0.8, alpha=0.5)
+                        ax.axvline(mode_post, color='orange', ls='--', lw=1.0, alpha=0.8)
+
+                fig.suptitle(full_title, fontsize=14)
+                if ln1 and ln2:
+                    fig.legend([ln1, ln2], ["Raw", "Shifted"], loc="upper right", fontsize=10)
+                
+                plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                pdf.savefig(fig)
+                plt.close(fig)
+
+        except Exception as e:
+            print(f"Failed Mosaic for {run_label}: {e}")
+            plt.close()
+
+def heatmap_to_pdf_pages(pdf, root_files, grid, shifts, quantity, apply_shift, title_prefix):
+    """
+    Generates a Heatmap for EACH file in root_files.
+    """
+    nrows = len(grid)
+    ncols = max(len(r) for r in grid)
+    bins = np.linspace(*XLIM, NBINS + 1)
+
+    for fpath in root_files:
+        run_label = _infer_run_label(fpath)
+        full_title = f"{title_prefix} - {run_label} ({'Shifted' if apply_shift else 'Raw'} {quantity})"
+        
+        try:
+            mat = np.full((nrows, ncols), np.nan, dtype=float)
+            
+            with uproot.open(fpath) as f:
+                if TREE_NAME not in f: continue
+                tree = f[TREE_NAME]
+                keys = set(tree.keys())
+
+                for r, row in enumerate(grid):
+                    for c, code in enumerate(row):
+                        if code is None: continue
+                        b, g, ch = parse_code(code)
+                        k = branch_name(b, g, ch)
+                        
+                        if k not in keys: continue
+                        
+                        raw = tree[k].array(library="np")
+                        arr = prep_array(raw)
+                        if arr is None: continue
+                        
+                        if apply_shift:
+                            arr = arr + shifts.get((b, g, ch), 0.0)
+                        
+                        st = hist_stats(arr, bins)
+                        if st is None: continue
+                        mu, mode, _ = st
+                        mat[r, c] = mu if quantity == "mean" else mode
+
+            # Plot Heatmap
+            fig, ax = plt.subplots(figsize=(10, 0.8 * nrows + 1.5))
+            
+            # Mask NaNs for better visualization
+            masked_mat = np.ma.masked_invalid(mat)
+            
+            # Determine range based on data or fixed limits
+            vmin = np.nanmin(mat) if np.nanmin(mat) > XLIM[0] else XLIM[0]
+            vmax = np.nanmax(mat) if np.nanmax(mat) < XLIM[1] else XLIM[1]
+            
+            im = ax.imshow(masked_mat, origin="upper", aspect="auto", cmap="viridis", vmin=vmin, vmax=vmax)
+            
+            # Text annotations
+            for rr in range(nrows):
+                for cc in range(ncols):
+                    if cc >= len(grid[rr]) or grid[rr][cc] is None: continue
+                    val = mat[rr, cc]
+                    code = grid[rr][cc]
+                    txt_val = f"{val:.2f}" if np.isfinite(val) else "—"
+                    
+                    # Contrast text color based on value
+                    text_color = "white" if np.isfinite(val) and val < (vmin + (vmax-vmin)*0.5) else "black"
+                    
+                    ax.text(cc, rr, f"{code}\n{txt_val}", ha="center", va="center", fontsize=8, color=text_color)
+                    
+            cbar = fig.colorbar(im, ax=ax)
+            cbar.set_label(f"{quantity} [ns]")
+            ax.set_title(full_title)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        except Exception as e:
+            print(f"Failed Heatmap for {run_label}: {e}")
+            plt.close()
 
 def column_overlay_to_pdf_pages(pdf, root_file, grid, shifts, title, apply_shift):
     bins = np.linspace(*XLIM, NBINS + 1)
@@ -593,7 +874,8 @@ def process_family_pdf(args_tuple):
     """
     Worker function executed by multiprocessing pool.
     """
-    (fam_name, root_file, grid, shifts, tag, out_dir, is_test, anchor_mu, test_rows) = args_tuple
+    # Unpack 8 items
+    (fam_name, file_list, grid, shifts, tag, out_dir, is_test, multi_run_data) = args_tuple
     
     pid = os.getpid()
     safe_fam = fam_name.replace(" ", "_").replace("-", "_")
@@ -602,24 +884,106 @@ def process_family_pdf(args_tuple):
     print(f"  [Worker {pid}] Processing {fam_name} ({'TEST' if is_test else 'REF'})...")
 
     with PdfPages(temp_pdf_name) as pdf: 
-        fig_bar = plot_family_summary_bars_figure(fam_name, test_rows, anchor_mu)
-        if fig_bar:
-            pdf.savefig(fig_bar)
-            plt.close(fig_bar)
-    
-        # row_overlay_to_pdf_pages(pdf, root_file, grid, shifts, 
-        #                          f"{tag} — {fam_name} ROW overlays (Raw)", apply_shift=False)
+        # 1. Bar Plots (Overlay + Individual Runs)
+        if is_test and multi_run_data:
+            # Returns a list of figures now
+            figs_list = plot_family_summary_bars_figure(fam_name, multi_run_data)
+            if figs_list:
+                for fig in figs_list:
+                    pdf.savefig(fig)
+                    plt.close(fig)
         
-        # row_overlay_to_pdf_pages(pdf, root_file, grid, shifts, 
-        #                          f"{tag} — {fam_name} ROW overlays (Shifted)", apply_shift=True)
-        
-        # --- LEGACY CALLS (Commented out per request) ---
-        mosaic_pre_post_to_pdf_pages(pdf, root_file, grid, shifts, f"{tag} Mosaic")
-        # column_overlay_to_pdf_pages(pdf, root_file, grid, shifts, f"{tag} Cols Raw", False)
-        # column_overlay_to_pdf_pages(pdf, root_file, grid, shifts, f"{tag} Cols Shifted", True)
-        heatmap_to_pdf_pages(pdf, root_file, grid, shifts, "mode", True, f"{tag} Heatmap")
+        # 2. Overlays and Heatmaps (Legacy Calls)
+        # Note: file_list is now a tuple, but indexing file_list[0] works for legacy single-file functions
+        if file_list and len(file_list) > 0:
+            
+            # Uncomment if you want the legacy mosaic
+            #mosaic_pre_post_to_pdf_pages(pdf, file_list, grid, shifts, f"{tag} Mosaic")
+            
+            # Uncomment if you want the legacy heatmap
+            heatmap_to_pdf_pages(pdf, file_list, grid, shifts, "mode", True, f"{tag} Heatmap")
 
     return temp_pdf_name
+
+
+def row_overlay_to_pdf_pages(pdf, root_files, grid, shifts, title, apply_shift):
+    """
+    Overlays histograms from MULTIPLE root files on the same plot.
+    root_files is a LIST of paths.
+    """
+    bins = np.linspace(*XLIM, NBINS + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
+    
+    # Pre-assign colors for files
+    default_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+    
+    with uproot.open(root_files[0]) as f_dummy: # Just to get tree check? No, open in loop.
+        pass
+
+    for rr, row in enumerate(grid):
+        codes = [code for code in row if code is not None]
+        fig, ax = plt.subplots(figsize=(12, 9))
+        codes_str = ", ".join(codes) if codes else "—"
+        ax.set_title(f"{title}\nRow {rr}: [{codes_str}]", fontsize=13)
+        ax.set_xlim(*XLIM)
+        ax.set_xlabel(r"$|t_{\mathrm{final}}|$ [ns]")
+        ax.set_ylabel("Events")
+        ax.tick_params(direction="in", top=True, right=True)
+        
+        any_plotted = False
+        ymax = 0
+        
+        # Loop over Grid Codes in this Row
+        for code in codes:
+            b, g, ch = parse_code(code)
+            k = branch_name(b, g, ch)
+            
+            # Loop over input files to overlay them for this code
+            for idx, fpath in enumerate(root_files):
+                label = _infer_run_label(fpath)
+                color = default_colors[idx % len(default_colors)]
+                
+                try:
+                    with uproot.open(fpath) as f:
+                        if TREE_NAME not in f: continue
+                        tree = f[TREE_NAME]
+                        if k not in tree: continue
+                        
+                        raw0 = tree[k].array(library="np")
+                        if raw0.size < MIN_RAW: continue
+                        arr = prep_array(raw0)
+                        if arr is None: continue
+                        
+                        if apply_shift:
+                            arr = arr + shifts.get((b, g, ch), 0.0)
+                        
+                        st = hist_stats(arr, bins)
+                        if st is None: continue
+                        _, mode, h = st
+                        ymax = max(ymax, int(h.max()))
+                        
+                        # Plot
+                        # Use Alpha to see overlaps
+                        ln, = ax.step(centers, h, where="mid", lw=1.5, color=color, alpha=0.8,
+                                      label=f"{code} {label} (m={mode:.2f})")
+                        # Add thin vertical line for mode
+                        ax.axvline(mode, color=color, linestyle="--", linewidth=1.0, alpha=0.6)
+                        any_plotted = True
+                except:
+                    continue
+
+        if not any_plotted:
+            plt.close(fig)
+            continue
+        else:
+            ax.set_ylim(0, max(1, int(1.15 * ymax)))
+            ax.legend(fontsize=8, frameon=False, loc="upper right", ncol=2)
+        
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
 def merge_pdfs(output_path, input_paths):
     merger = PdfWriter()
     valid_files = 0
@@ -651,10 +1015,11 @@ def merge_pdfs(output_path, input_paths):
     else:
         print(f"WARNING: No valid pages found. PDF not saved: {output_path}")
 # ================= MAIN =================
+# ================= MAIN =================
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reference", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1501_250928105227_converted_timingskim.root")
-    ap.add_argument("--test", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1511_250928180741_converted_timingskim.root")
+    ap.add_argument("--test", nargs="+", default=["/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1511_250928180741_converted_timingskim.root"])
     ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/calibration_studiesZ/MODE_CALIB_OUTPUT")
     ap.add_argument("--calib-stat", choices=["mean", "mode"], default="mode")
     ap.add_argument("--workers", type=int, default=min(4, os.cpu_count()), help="Number of parallel processes")
@@ -662,11 +1027,10 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
     ref_label = _infer_run_label(args.reference)
-    test_label = _infer_run_label(args.test)
     suffix = f"calib_{args.calib_stat}"
 
-    # --- 1. Derive shifts (Serial) ---
-    print("Deriving Calibration Shifts...")
+    # --- 1. Derive shifts (Reference) ---
+    print(f"Deriving Calibration Shifts from Reference: {ref_label}...")
     shifts_by_family = {}
     anchor_targets = {}
     
@@ -680,40 +1044,70 @@ def main():
     shifts_by_family["CER-All"] = {**shifts_by_family["CER-Quartz"], **shifts_by_family["CER-Plastic"]}
     anchor_targets["CER-All"] = anchor_targets["CER-Quartz"]
 
-    # --- 2. Save JSON ---
+    # Save JSON
     shifts_json_path = os.path.join(args.outdir, f"shifts_{ref_label}_{suffix}.json")
-    meta = {
-        "reference": args.reference, "calib_stat": args.calib_stat, 
-        "families": list(shifts_by_family.keys())
-    }
+    meta = {"reference": args.reference, "calib_stat": args.calib_stat, "families": list(shifts_by_family.keys())}
     save_shifts_json(shifts_json_path, meta, shifts_by_family)
 
-    # --- 3. Compute Test Stats (Serial) ---
-    print("Computing Test Statistics...")
-    per_family_test_rows = {}
-    for fam in FAMILIES.keys():
-        per_family_test_rows[fam] = compute_test_mode_table(args.test, FAMILIES[fam], shifts_by_family[fam])
+    # --- 2. Process TEST Files (Loop) ---
+    print(f"Processing {len(args.test)} Test Files...")
+    
+    multi_run_by_fam = {fam: [] for fam in FAMILIES.keys()}
+    all_test_labels = []
 
-    # --- 4. Save Text Table ---
-    test_txt_path = os.path.join(args.outdir, f"TEST_mode_shift_table_{test_label}_{suffix}.txt")
-    write_mode_shift_txt(test_txt_path, f"TEST {test_label}", per_family_test_rows, 
-                         args.calib_stat, ref_label, test_label)
+    for test_file in args.test:
+        label = _infer_run_label(test_file)
+        all_test_labels.append(label)
+        print(f" -> Analyzing {label}...")
+        
+        per_family_test_rows = {}
+        
+        for fam in ["CER-Quartz", "CER-Plastic", "SCI"]:
+            _, anchor_info, _ = derive_family_calibration_fixed_anchor(
+                test_file, FAMILIES[fam], ANCHORS[fam], args.calib_stat
+            )
+            this_anchor = anchor_info[1]['mu']
+            
+            rows = compute_test_mode_table(test_file, FAMILIES[fam], shifts_by_family[fam])
+            per_family_test_rows[fam] = rows
+            
+            multi_run_by_fam[fam].append({
+                'label': label,
+                'rows': rows,
+                'anchor': this_anchor
+            })
 
-    # --- 5. Multiprocessing Plot Generation ---
+        q_anchor = next((item['anchor'] for item in multi_run_by_fam["CER-Quartz"] if item['label'] == label), 0.0)
+        all_rows = per_family_test_rows["CER-Quartz"] + per_family_test_rows["CER-Plastic"]
+        per_family_test_rows["CER-All"] = all_rows
+        
+        multi_run_by_fam["CER-All"].append({
+            'label': label,
+            'rows': all_rows,
+            'anchor': q_anchor
+        })
+
+        txt_path = os.path.join(args.outdir, f"TEST_table_{label}_{suffix}.txt")
+        write_mode_shift_txt(txt_path, f"TEST {label}", per_family_test_rows, args.calib_stat, ref_label, label)
+
+    # --- 3. Multiprocessing Plot Generation ---
     fam_list = ["CER-Quartz", "CER-Plastic", "SCI", "CER-All"]
     
     tasks_ref = []
     for fam in fam_list:
+        # FIX: Use tuple for file list: (args.reference,)
         tasks_ref.append((
-            fam, args.reference, FAMILIES[fam], shifts_by_family[fam],
-            f"REF {ref_label}", args.outdir, False, 0.0, None
+            fam, (args.reference,), FAMILIES[fam], shifts_by_family[fam],
+            f"REF {ref_label}", args.outdir, False, None
         ))
 
     tasks_test = []
+    combined_test_tag = f"TEST ({len(args.test)} Runs)"
     for fam in fam_list:
+        # FIX: Use tuple for file list: tuple(args.test)
         tasks_test.append((
-            fam, args.test, FAMILIES[fam], shifts_by_family[fam],
-            f"TEST {test_label}", args.outdir, True, anchor_targets[fam], per_family_test_rows[fam]
+            fam, tuple(args.test), FAMILIES[fam], shifts_by_family[fam],
+            combined_test_tag, args.outdir, True, multi_run_by_fam[fam]
         ))
 
     print(f"Starting PDF generation with {args.workers} workers...")
@@ -722,23 +1116,24 @@ def main():
         print(" -> Generating Reference pages...")
         ref_temp_files = pool.map(process_family_pdf, tasks_ref)
         
-        print(" -> Generating Test pages...")
+        print(" -> Generating Test pages (Multi-Run)...")
         test_temp_files = pool.map(process_family_pdf, tasks_test)
 
-    # --- 6. Merge and Cleanup ---
+    # --- 4. Merge ---
     final_ref_pdf = os.path.join(args.outdir, f"REF_file_{ref_label}_{suffix}.pdf")
-    final_test_pdf = os.path.join(args.outdir, f"TEST_file_{test_label}_{suffix}.pdf")
+    if len(all_test_labels) > 1:
+        test_label_short = f"MultiRun_{len(all_test_labels)}_files"
+    else:
+        test_label_short = all_test_labels[0]
+        
+    final_test_pdf = os.path.join(args.outdir, f"TEST_file_{test_label_short}_{suffix}.pdf")
 
-    print("Merging Reference PDF...")
+    print("Merging PDFs...")
     merge_pdfs(final_ref_pdf, ref_temp_files)
-    
-    print("Merging Test PDF...")
     merge_pdfs(final_test_pdf, test_temp_files)
 
-    print("Cleaning up temp files...")
     for f in ref_temp_files + test_temp_files:
-        if os.path.exists(f):
-            os.remove(f)
+        if os.path.exists(f): os.remove(f)
 
     print("Done!")
     print(f"Ref PDF: {final_ref_pdf}")
