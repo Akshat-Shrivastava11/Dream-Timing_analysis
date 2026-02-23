@@ -35,8 +35,8 @@ QUARTZ_GRID = [
     ["006", "004", "206", "204"],
     ["016", "014", "216", "214"],
     ["026", "024", "226", "224"],
-    # [None,  "030", None,  None],
-    # [None,  "034", None,  None],
+    [None,  "030", None,  None],
+    [None,  "034", None,  None],
     ["106", "104", None, "304"],
     ["116", "114", None, "314"],
     # ["126", "124", "326", "324"],
@@ -44,14 +44,14 @@ QUARTZ_GRID = [
 ]
 
 PLASTIC_GRID = [
-    # [None,  "000", "202", "200"],
-    # ["012", "010", "212", "210"],
-    # ["022", "020", "222", "220"],
-    # ["032", None,  "232", "230"],
+    [None,  "000", "202", "200"],
+    ["012", "010", "212", "210"],
+    ["022", "020", "222", "220"],
+    ["032", None,  "232", "230"],
     ["102", "100", "302", "300"],
     ["112", "110", "312", "310"],
-    # ["122", "120", "322", "320"],
-    # ["132", "130", "332", "330"],
+    ["122", "120", "322", "320"],
+    ["132", "130", "332", "330"],
 ]
 
 CER_ALL_GRID = [
@@ -74,22 +74,22 @@ CER_ALL_GRID = [
 ]
 
 SCI_GRID = [
-    # ["003", "001", "203", "201"],
-    # ["007", "005", "207", "205"],
-    # ["013", "011", "213", "211"],
-    # ["017", "015", "217", "215"],
-    # ["023", "021", "223", "221"],
-    # ["027", "025", "227", "225"],
-    # ["033", "031", "233", "231"],
-    # [None,  "035", None,  "235"],
+    ["003", "001", "203", "201"],
+    ["007", "005", "207", "205"],
+    ["013", "011", "213", "211"],
+    ["017", "015", "217", "215"],
+    ["023", "021", "223", "221"],
+    ["027", "025", "227", "225"],
+    ["033", "031", "233", "231"],
+    [None,  "035", None,  "235"],
     ["103", "101", "303", "301"],
     ["107", "105", "307", "305"],
     ["113", "111", "313", "311"],
     ["117", "115", "317", "315"],
-    # ["123", "121", "323", "321"],
-    # ["127", "125", "327", "325"],
-    # ["133", "131", "333", "331"],
-    # [None,  "135", None,  "335"],
+    ["123", "121", "323", "321"],
+    ["127", "125", "327", "325"],
+    ["133", "131", "333", "331"],
+    [None,  "135", None,  "335"],
 ]
 
 FAMILIES = {
@@ -100,9 +100,9 @@ FAMILIES = {
 }
 
 ANCHORS = {
-    "SCI": (1, 0, 7),
-    "CER-Quartz": (1, 0, 4),
-    "CER-Plastic": (1, 0, 0),
+    "SCI": (0, 3, 3),
+    "CER-Quartz": (0, 3, 0),
+    "CER-Plastic": (0, 1, 0),
 }
 
 # ================= HELPERS =================
@@ -249,11 +249,23 @@ def compute_test_mode_table(root_file, grid, shifts):
                 if st_post is None: continue
                 _, mode_post, _ = st_post
 
+                # Fit Gaussian to extract sigma, then calculate Standard Error
+                fit_ok, mu_fit, sig_fit, _ = fit_gaussian_to_peak(arr_post, bins, window=0.5)
+                
+                N = arr.size
+                
+                # Calculate sigma / sqrt(N)
+                if fit_ok and np.isfinite(sig_fit) and N > 0:
+                    mode_err = float(sig_fit / np.sqrt(N))
+                else:
+                    mode_err = 0.0
+
                 rows.append({
                     "code": code,
-                    "N": int(arr.size),
+                    "N": int(N),
                     "mode_pre": float(mode_pre),
                     "mode_post": float(mode_post),
+                    "mode_err": float(mode_err),  # Now stores standard error
                     "dmode_test": float(mode_post - mode_pre),
                     "shift_used": float(shift_used),
                 })
@@ -317,119 +329,7 @@ def write_mode_shift_txt(outpath, tag, per_family_rows, calib_stat, ref_label, t
 # ================= PLOTTING FUNCTIONS =================
 def plot_family_summary_bars_figure(fam_name, multi_run_data):
     """
-    Plots grouped bars for multiple test runs on the same figure.
-    multi_run_data is a list of dicts: {'label':..., 'rows':..., 'anchor':..., 'color':...}
-    """
-    if not multi_run_data:
-        return None
-
-    # --- 1. DETERMINE SORT ORDER (Based on Grid) ---
-    grid = FAMILIES.get(fam_name)
-    if grid:
-        flat_order = []
-        for row in grid:
-            for code in row:
-                if code is not None: flat_order.append(code)
-        order_map = {code: i for i, code in enumerate(flat_order)}
-    else:
-        # Fallback: get all codes from data
-        all_codes = set()
-        for item in multi_run_data:
-            for r in item['rows']:
-                all_codes.add(r['code'])
-        flat_order = sorted(list(all_codes))
-        order_map = {c: i for i, c in enumerate(flat_order)}
-
-    # Collect all codes present in the data
-    present_codes = set()
-    for item in multi_run_data:
-        for r in item['rows']:
-            present_codes.add(r['code'])
-    
-    # Sort them according to the grid order
-    sorted_codes = sorted(list(present_codes), key=lambda x: order_map.get(x, 9999))
-    if not sorted_codes: return None
-
-    # --- 2. SETUP PLOT ---
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True, 
-                                   gridspec_kw={'height_ratios': [3, 1]})
-    
-    n_runs = len(multi_run_data)
-    total_width = 0.8
-    bar_width = total_width / n_runs
-    indices = np.arange(len(sorted_codes))
-    
-    # Define a color cycle
-    default_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2']
-
-    min_y, max_y = 999, -999
-
-    # --- 3. LOOP OVER RUNS ---
-    for i, run_item in enumerate(multi_run_data):
-        label = run_item['label']
-        rows = run_item['rows']
-        anchor_val = run_item['anchor']
-        # Use provided color or cycle through defaults
-        color = run_item.get('color', default_colors[i % len(default_colors)])
-        
-        # Map this run's data to the sorted codes
-        row_map = {r['code']: r['mode_post'] for r in rows}
-        modes = [row_map.get(c, np.nan) for c in sorted_codes]
-        residuals = [m - anchor_val if np.isfinite(m) else np.nan for m in modes]
-
-        # Calculate offset to place bars side-by-side
-        offset = (i - (n_runs - 1) / 2) * bar_width
-        
-        # A. Bar Chart
-        ax1.bar(indices + offset, modes, width=bar_width, label=label, 
-                color=color, alpha=0.65, edgecolor='black', linewidth=0.5)
-        
-        # B. Anchor Line (Dashed) - Unique for each run
-        ax1.axhline(anchor_val, color=color, linestyle='--', linewidth=1.5, alpha=0.8,
-                    label=f"{label} Anchor ({anchor_val:.2f})")
-
-        # Track min/max for scaling
-        valid_modes = [m for m in modes if np.isfinite(m)]
-        if valid_modes:
-            min_y = min(min_y, min(valid_modes))
-            max_y = max(max_y, max(valid_modes))
-
-        # C. Residuals
-        ax2.scatter(indices + offset, residuals, color=color, marker='o', s=30)
-        ax2.axhline(0, color='black', linestyle='-', linewidth=0.5, alpha=0.3)
-
-    # --- 4. FORMATTING ---
-    margin = 0.6
-    if min_y != 999:
-        ax1.set_ylim(min_y - margin, max_y + margin)
-    
-    ax1.set_ylabel("Mode TOA [ns]", fontsize=12)
-    ax1.set_title(f"Family Timing & Residuals: {fam_name}", fontsize=16, pad=20)
-    ax1.grid(axis='y', linestyle=':', alpha=0.6)
-    
-    # Legend: 2 columns to fit bar labels and anchor labels
-    ax1.legend(loc='upper left', fontsize=8, ncol=2, framealpha=0.9)
-
-    ax2.set_ylabel(r"$\Delta$ (Mode - Run Anchor)", fontsize=10)
-    ax2.set_xlabel("Channel Code (Ordered by Grid)", fontsize=12)
-    ax2.grid(axis='y', linestyle='--', alpha=0.4)
-    ax2.set_xticks(indices)
-    ax2.set_xticklabels(sorted_codes, rotation=45, ha='right', fontsize=9)
-    ax2.set_xlim(-0.6, len(sorted_codes) - 0.4)
-
-    # Symmetric Y limits for residuals
-    y_limits = ax2.get_ylim()
-    max_res = max(abs(y_limits[0]), abs(y_limits[1]), 0.1)
-    ax2.set_ylim(-max_res*1.15, max_res*1.15)
-
-    fig.tight_layout()
-    fig.subplots_adjust(hspace=0.05)
-    
-    return fig
-
-def plot_family_summary_bars_figure(fam_name, multi_run_data):
-    """
-    Plots grouped bars for multiple test runs on the same figure,
+    Plots points with error bars for multiple test runs on the same figure,
     AND generates individual plots for each run.
     
     Returns:
@@ -477,8 +377,8 @@ def plot_family_summary_bars_figure(fam_name, multi_run_data):
                                            gridspec_kw={'height_ratios': [3, 1]})
     
     n_runs = len(multi_run_data)
-    total_width = 0.8
-    bar_width = total_width / n_runs
+    total_width = 0.6 # Adjust spread of points slightly for overlay
+    point_offset = total_width / max(1, n_runs)
     
     min_y, max_y = 999, -999
 
@@ -487,43 +387,48 @@ def plot_family_summary_bars_figure(fam_name, multi_run_data):
         rows = run_item['rows']
         anchor_val = run_item['anchor']
         color = run_item.get('color', default_colors[i % len(default_colors)])
-        
-        # Save color back to item for consistency in single plots
         run_item['color'] = color 
 
+        # Map modes and errors
         row_map = {r['code']: r['mode_post'] for r in rows}
+        err_map = {r['code']: r.get('mode_err', 0.0) for r in rows} # fallback to 0.0 if old data
+        
         modes = [row_map.get(c, np.nan) for c in sorted_codes]
+        errors = [err_map.get(c, 0.0) for c in sorted_codes]
         residuals = [m - anchor_val if np.isfinite(m) else np.nan for m in modes]
 
-        offset = (i - (n_runs - 1) / 2) * bar_width
+        offset = (i - (n_runs - 1) / 2) * point_offset
         
-        # Bars
-        ax1.bar(indices + offset, modes, width=bar_width, label=label, 
-                color=color, alpha=0.65, edgecolor='black', linewidth=0.5)
+        # Points with Error Bars
+        ax1.errorbar(indices + offset, modes, yerr=errors, fmt='o', label=label, 
+                     color=color, alpha=0.85, capsize=3, elinewidth=1.5, markersize=6)
         
         # Anchor
         ax1.axhline(anchor_val, color=color, linestyle='--', linewidth=1.5, alpha=0.8,
                     label=f"{label} Anchor")
 
-        valid_modes = [m for m in modes if np.isfinite(m)]
-        if valid_modes:
-            min_y = min(min_y, min(valid_modes))
-            max_y = max(max_y, max(valid_modes))
+        # Track limits using modes AND errors
+        for m, e in zip(modes, errors):
+            if np.isfinite(m):
+                min_y = min(min_y, m - e)
+                max_y = max(max_y, m + e)
 
         # Residuals
-        ax2.scatter(indices + offset, residuals, color=color, marker='o', s=30)
+        ax2.errorbar(indices + offset, residuals, yerr=errors, fmt='o', color=color, 
+                     alpha=0.8, capsize=2, elinewidth=1.0, markersize=5)
         ax2.axhline(0, color='black', linestyle='-', linewidth=0.5, alpha=0.3)
 
     # Format Overlay
-    margin = 0.6
+    margin = 0.8
     if min_y != 999: ax1.set_ylim(min_y - margin, max_y + margin)
     ax1.set_ylabel("Mode TOA [ns]", fontsize=12)
     ax1.set_title(f"Family Timing & Residuals: {fam_name} (OVERLAY)", fontsize=16, pad=20)
     ax1.grid(axis='y', linestyle=':', alpha=0.6)
+    ax1.grid(True, axis='both', linestyle='--', alpha=0.5)
     ax1.legend(loc='upper left', fontsize=8, ncol=2, framealpha=0.9)
     ax2.set_ylabel(r"$\Delta$ (Mode - Anchor)", fontsize=10)
     ax2.set_xlabel("Channel Code (Ordered by Grid)", fontsize=12)
-    ax2.grid(axis='y', linestyle='--', alpha=0.4)
+    ax2.grid(True, axis='both', linestyle='--', alpha=0.5)
     ax2.set_xticks(indices)
     ax2.set_xticklabels(sorted_codes, rotation=45, ha='right', fontsize=9)
     ax2.set_xlim(-0.6, len(sorted_codes) - 0.4)
@@ -542,35 +447,38 @@ def plot_family_summary_bars_figure(fam_name, multi_run_data):
         label = run_item['label']
         rows = run_item['rows']
         anchor_val = run_item['anchor']
-        color = run_item.get('color', 'blue') # Use stored color
+        color = run_item.get('color', 'blue') 
         
         fig_single, (sax1, sax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True, 
                                                 gridspec_kw={'height_ratios': [3, 1]})
         
         row_map = {r['code']: r['mode_post'] for r in rows}
+        err_map = {r['code']: r.get('mode_err', 0.0) for r in rows}
+        
         modes = [row_map.get(c, np.nan) for c in sorted_codes]
+        errors = [err_map.get(c, 0.0) for c in sorted_codes]
         residuals = [m - anchor_val if np.isfinite(m) else np.nan for m in modes]
 
-        # Single Bar (Centered, Full Width)
-        sax1.bar(indices, modes, width=0.7, label=label, 
-                 color=color, alpha=0.7, edgecolor='black', linewidth=0.8)
+        # Single Points with Error Bars
+        sax1.errorbar(indices, modes, yerr=errors, fmt='o', label=label, 
+                      color=color, alpha=0.9, capsize=4, elinewidth=1.5, markersize=8)
         
         sax1.axhline(anchor_val, color='red', linestyle='--', linewidth=2.0, alpha=0.9,
                      label=f"Anchor ({anchor_val:.2f} ns)")
 
-        # Single Residuals
-        # Use stem plot for single run as it looks cleaner than scatter
-        markerline, stemlines, baseline = sax2.stem(indices, residuals, linefmt='grey', markerfmt='o')
-        plt.setp(markerline, 'color', color, 'markersize', 5)
-        plt.setp(stemlines, 'linewidth', 1, 'alpha', 0.6)
+        # Single Residuals with Errors
+        sax2.errorbar(indices, residuals, yerr=errors, fmt='o', color=color, 
+                      alpha=0.8, capsize=3, elinewidth=1.2, markersize=6)
         sax2.axhline(0, color='red', linestyle='-', linewidth=1, alpha=0.5)
 
         # Format Single
         s_min_y, s_max_y = 999, -999
-        valid_modes = [m for m in modes if np.isfinite(m)]
-        if valid_modes:
-            s_min_y = min(valid_modes)
-            s_max_y = max(valid_modes)
+        for m, e in zip(modes, errors):
+            if np.isfinite(m):
+                s_min_y = min(s_min_y, m - e)
+                s_max_y = max(s_max_y, m + e)
+        
+        if s_min_y != 999:
             sax1.set_ylim(s_min_y - margin, s_max_y + margin)
 
         sax1.set_ylabel("Mode TOA [ns]", fontsize=12)
@@ -586,7 +494,7 @@ def plot_family_summary_bars_figure(fam_name, multi_run_data):
         sax2.set_xlim(-0.6, len(sorted_codes) - 0.4)
         
         # Auto Scale Residuals Y
-        s_max_res = max(max([abs(r) for r in residuals if np.isfinite(r)] + [0.1]), 0.1)
+        s_max_res = max(max([abs(r) + e for r, e in zip(residuals, errors) if np.isfinite(r)] + [0.1]), 0.1)
         sax2.set_ylim(-s_max_res*1.2, s_max_res*1.2)
 
         fig_single.tight_layout()
@@ -884,24 +792,24 @@ def process_family_pdf(args_tuple):
     print(f"  [Worker {pid}] Processing {fam_name} ({'TEST' if is_test else 'REF'})...")
 
     with PdfPages(temp_pdf_name) as pdf: 
-        # 1. Bar Plots (Overlay + Individual Runs)
+        mosaic_pre_post_to_pdf_pages(pdf, file_list, grid, shifts, f"{tag} Mosaic")
+        # 1. Error Bar Plots (Overlay + Individual Runs)
         if is_test and multi_run_data:
-            # Returns a list of figures now
             figs_list = plot_family_summary_bars_figure(fam_name, multi_run_data)
             if figs_list:
                 for fig in figs_list:
                     pdf.savefig(fig)
                     plt.close(fig)
         
-        # 2. Overlays and Heatmaps (Legacy Calls)
-        # Note: file_list is now a tuple, but indexing file_list[0] works for legacy single-file functions
+        # 2. Overlays and Heatmaps
         if file_list and len(file_list) > 0:
-            
-            # Uncomment if you want the legacy mosaic
-            #mosaic_pre_post_to_pdf_pages(pdf, file_list, grid, shifts, f"{tag} Mosaic")
-            
-            # Uncomment if you want the legacy heatmap
-            heatmap_to_pdf_pages(pdf, file_list, grid, shifts, "mode", True, f"{tag} Heatmap")
+            # FIX: Loop through the tuple and pass files individually
+            for file_path in file_list:
+                # Extract run label for a cleaner title if dealing with multiple test files
+                run_label = _infer_run_label(file_path)
+                current_tag = f"{tag} - {run_label}" if is_test else f"{tag}"
+                
+                heatmap_to_pdf_pages(pdf, file_path, grid, shifts, "mode", True, f"{current_tag} Heatmap")
 
     return temp_pdf_name
 
@@ -1020,7 +928,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reference", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1501_250928105227_converted_timingskim.root")
     ap.add_argument("--test", nargs="+", default=["/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1511_250928180741_converted_timingskim.root"])
-    ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/calibration_studiesZ/MODE_CALIB_OUTPUT")
+    ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/TRUE-HGtiming/calibration_studiesZ/MODE_CALIB_OUTPUT_y_1000")
     ap.add_argument("--calib-stat", choices=["mean", "mode"], default="mode")
     ap.add_argument("--workers", type=int, default=min(4, os.cpu_count()), help="Number of parallel processes")
     args = ap.parse_args()
