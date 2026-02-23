@@ -82,6 +82,7 @@ def compute_pid_mask(tree, particle_type):
 
         try:
             waveforms = tree[branch_name].array(library="ak")
+            # Basic processing
             if method == "Sum":
                 baseline = ak.mean(waveforms[:, :30], axis=1)
                 waveforms_blsub = waveforms - baseline
@@ -111,14 +112,10 @@ def get_hit_times_vectorized(events):
     subtract baseline (mean of first 20 samples) and find index of minimum.
     """
     if events.ndim != 2:
-        # Fallback if somehow 1D
         return np.zeros(len(events))
 
-    # Calculate baseline for each event (mean of first 20 samples)
     baselines = np.mean(events[:, :20], axis=1, keepdims=True)
     corrected = events - baselines
-    
-    # Find index of minimum value (the hit time)
     hit_indices = np.argmin(corrected, axis=1)
     return hit_indices
 
@@ -127,25 +124,23 @@ def get_wc_positions(tree):
     Loads raw WC waveforms, computes hit times, returns X and Y arrays.
     """
     try:
-        # 1. Load using Awkward Array (library="ak")
-        L1_ak = tree[WC_CHANNELS["L1"]].array(library="ak")
-        R1_ak = tree[WC_CHANNELS["R1"]].array(library="ak")
-        U1_ak = tree[WC_CHANNELS["U1"]].array(library="ak")
-        D1_ak = tree[WC_CHANNELS["D1"]].array(library="ak")
+        keys = set(tree.keys())
+        required = [WC_CHANNELS["L1"], WC_CHANNELS["R1"], WC_CHANNELS["U1"], WC_CHANNELS["D1"]]
+        if not all(k in keys for k in required):
+            return None, None
 
-        # 2. Convert strictly to NumPy 2D Matrix
-        L1 = ak.to_numpy(L1_ak)
-        R1 = ak.to_numpy(R1_ak)
-        U1 = ak.to_numpy(U1_ak)
-        D1 = ak.to_numpy(D1_ak)
+        L1 = ak.to_numpy(tree[WC_CHANNELS["L1"]].array(library="ak"))
+        R1 = ak.to_numpy(tree[WC_CHANNELS["R1"]].array(library="ak"))
+        U1 = ak.to_numpy(tree[WC_CHANNELS["U1"]].array(library="ak"))
+        D1 = ak.to_numpy(tree[WC_CHANNELS["D1"]].array(library="ak"))
 
-        # Get times (vectorized)
+        # Get times
         L1_t = get_hit_times_vectorized(L1)
         R1_t = get_hit_times_vectorized(R1)
         U1_t = get_hit_times_vectorized(U1)
         D1_t = get_hit_times_vectorized(D1)
 
-        # Calculate X and Y positions
+        # Calculate X and Y positions (simple difference method)
         x_positions = L1_t - R1_t
         y_positions = U1_t - D1_t
         
@@ -184,8 +179,12 @@ def process_channel(ch_code, files, args):
     tfinal_branch = _branch(b, g, c)
     
     pid_tag = args.pid if args.pid else "NoPID"
+    out_dir = args.outdir
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
     pdf_filename = f"WirechamberCorr_Chan{ch_code}_{pid_tag}.pdf"
-    out_path = os.path.join(args.outdir, pdf_filename)
+    out_path = os.path.join(out_dir, pdf_filename)
     
     print(f"\n--- Generating PDF for Channel {ch_code} -> {out_path} ---")
 
@@ -196,117 +195,141 @@ def process_channel(ch_code, files, args):
             print(f"  Processing Run {run_id}...")
             
             try:
-                uf = uproot.open(fpath)
-                tree = uf[TREE_NAME]
-                keys = set(tree.keys())
+                with uproot.open(fpath) as uf:
+                    if TREE_NAME not in uf:
+                        print(f"    [SKIP] Tree {TREE_NAME} missing.")
+                        continue
+                    
+                    tree = uf[TREE_NAME]
+                    keys = set(tree.keys())
 
-                if tfinal_branch not in keys:
-                    print(f"    [SKIP] Branch {tfinal_branch} not found.")
-                    continue
+                    if tfinal_branch not in keys:
+                        print(f"    [SKIP] Branch {tfinal_branch} not found.")
+                        continue
 
-                # 1. Get tfinal
-                t_ak = tree[tfinal_branch].array(library="ak")
-                t_data = ak.to_numpy(t_ak)
-                
-                # 2. Get Wire Chamber
-                wc_x, wc_y = get_wc_positions(tree)
-                if wc_x is None: continue
+                    # 1. Get tfinal
+                    t_ak = tree[tfinal_branch].array(library="ak")
+                    t_data = ak.to_numpy(t_ak)
+                    
+                    # 2. Get Wire Chamber
+                    wc_x, wc_y = get_wc_positions(tree)
+                    if wc_x is None: 
+                        print("    [SKIP] WC data missing/error.")
+                        continue
 
-                # 3. Align Lengths
-                n_events = min(len(t_data), len(wc_x), len(wc_y))
-                
-                # 4. Apply Cuts & PID
-                mask = np.ones(n_events, dtype=bool)
+                    # 3. Align Lengths
+                    n_events = min(len(t_data), len(wc_x), len(wc_y))
+                    
+                    # 4. Apply Cuts & PID
+                    mask = np.ones(n_events, dtype=bool)
 
-                if args.pid:
-                    pid_mask = compute_pid_mask(tree, args.pid)
-                    if pid_mask is not None:
-                        mask = mask & pid_mask[:n_events]
+                    if args.pid:
+                        pid_mask = compute_pid_mask(tree, args.pid)
+                        if pid_mask is not None:
+                            mask = mask & pid_mask[:n_events]
 
-                # Apply Mask
-                t_final = np.abs(t_data[:n_events][mask])
-                x_final = wc_x[:n_events][mask]
-                y_final = wc_y[:n_events][mask]
+                    # Slice data
+                    t_final = np.abs(t_data[:n_events][mask])
+                    x_final = wc_x[:n_events][mask]
+                    y_final = wc_y[:n_events][mask]
 
-                # Range Mask (Zoom)
-                range_mask = (t_final >= args.tmin) & (t_final <= args.tmax) & \
-                             (x_final >= -args.wc_range) & (x_final <= args.wc_range) & \
-                             (y_final >= -args.wc_range) & (y_final <= args.wc_range)
-                
-                t_plot = t_final[range_mask]
-                x_plot = x_final[range_mask]
-                y_plot = y_final[range_mask]
+                    # 5. Range Mask (Zoom)
+                    range_mask = (t_final >= args.tmin) & (t_final <= args.tmax) & \
+                                 (x_final >= -args.wc_range) & (x_final <= args.wc_range) & \
+                                 (y_final >= -args.wc_range) & (y_final <= args.wc_range)
+                    
+                    t_plot = t_final[range_mask]
+                    x_plot = x_final[range_mask]
+                    y_plot = y_final[range_mask]
 
-                if len(t_plot) < 10:
-                    print("    [SKIP] Not enough events after cuts.")
-                    continue
+                    if len(t_plot) < 10:
+                        print("    [SKIP] Not enough events after cuts.")
+                        continue
 
-                # 4. Plotting
-                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.5, 11))
-                
-                # Plot 1: tfinal vs X
-                h1 = ax1.hist2d(t_plot, x_plot, bins=100, 
-                                range=[[args.tmin, args.tmax], [-args.wc_range, args.wc_range]],
-                                cmap="viridis", norm=LogNorm())
-                fig.colorbar(h1[3], ax=ax1, label="Counts (Log)")
-                ax1.set_xlabel(f"|t_final| Ch{ch_code} [ns]")
-                ax1.set_ylabel("Wire Chamber X (L - R)")
-                ax1.set_title(f"Run {run_id} - Channel {ch_code} - Timing vs X ({pid_tag})")
-                
-                # Removed hardcoded ax1.xlim(11,14) as it was syntactically incorrect 
-                # and redundant because args.tmin/tmax handles it.
+                    # ==========================================
+                    # CALCULATE CORRELATION
+                    # ==========================================
+                    try:
+                        corr_x = np.corrcoef(t_plot, x_plot)[0, 1]
+                    except:
+                        corr_x = 0.0
+                    
+                    try:
+                        corr_y = np.corrcoef(t_plot, y_plot)[0, 1]
+                    except:
+                        corr_y = 0.0
 
-                # Plot 2: tfinal vs Y
-                h2 = ax2.hist2d(t_plot, y_plot, bins=100, 
-                                range=[[args.tmin, args.tmax], [-args.wc_range, args.wc_range]],
-                                cmap="viridis", norm=LogNorm())
-                fig.colorbar(h2[3], ax=ax2, label="Counts (Log)")
-                ax2.set_xlabel(f"|t_final| Ch{ch_code} [ns]")
-                ax2.set_ylabel("Wire Chamber Y (U - D)")
-                ax2.set_title(f"Run {run_id} - Channel {ch_code} - Timing vs Y ({pid_tag})")
-            
-                plt.tight_layout()
-                pdf.savefig(fig)
-                plt.close(fig)
+                    # 6. Plotting
+                    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.5, 11))
+                    
+                    # --- Plot 1: tfinal vs X ---
+                    h1 = ax1.hist2d(t_plot, x_plot, bins=100, 
+                                    range=[[args.tmin, args.tmax], [-args.wc_range, args.wc_range]],
+                                    cmap="viridis", norm=LogNorm())
+                    fig.colorbar(h1[3], ax=ax1, label="Counts (Log)")
+                    ax1.set_xlabel(f"|t_final| Ch{ch_code} [ns]")
+                    ax1.set_ylabel("Wire Chamber X (L - R)")
+                    ax1.set_title(f"Run {run_id} | Ch {ch_code} | Time vs X | {pid_tag}")
+                    
+                    # Add Correlation Score Text
+                    ax1.text(0.95, 0.95, f"Corr: {corr_x:.4f}", 
+                             transform=ax1.transAxes, ha='right', va='top', 
+                             fontsize=12, fontweight='bold', bbox=dict(facecolor='white', alpha=0.8))
+
+                    # --- Plot 2: tfinal vs Y ---
+                    h2 = ax2.hist2d(t_plot, y_plot, bins=100, 
+                                    range=[[args.tmin, args.tmax], [-args.wc_range, args.wc_range]],
+                                    cmap="viridis", norm=LogNorm())
+                    fig.colorbar(h2[3], ax=ax2, label="Counts (Log)")
+                    ax2.set_xlabel(f"|t_final| Ch{ch_code} [ns]")
+                    ax2.set_ylabel("Wire Chamber Y (U - D)")
+                    ax2.set_title(f"Run {run_id} | Ch {ch_code} | Time vs Y | {pid_tag}")
+                    
+                    # Add Correlation Score Text
+                    ax2.text(0.95, 0.95, f"Corr: {corr_y:.4f}", 
+                             transform=ax2.transAxes, ha='right', va='top', 
+                             fontsize=12, fontweight='bold', bbox=dict(facecolor='white', alpha=0.8))
+
+                    plt.tight_layout()
+                    pdf.savefig(fig)
+                    plt.close(fig)
 
             except Exception as e:
                 print(f"    [ERR] Failed to process run {run_id}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ana-files", nargs="+", help="Input ROOT files")
+    ap.add_argument("ana_files", nargs="*", help="Input ROOT files") # Positional is easier usually
     ap.add_argument("--ana-glob", help="Glob pattern for ROOT files")
     ap.add_argument("--outdir", default="./WirechamberCorr", help="Output folder")
     ap.add_argument("--pid", default=None, choices=["muon", "pion", "electron", "proton"], 
                     help="Filter by particle type")
     
-    # Updated defaults to 11.0 and 14.0 for automatic zooming
+    # Defaults
     ap.add_argument("--tmin", type=float, default=11.0, help="Min tfinal (default 11.0)")
     ap.add_argument("--tmax", type=float, default=14.0, help="Max tfinal (default 14.0)")
     ap.add_argument("--wc-range", type=float, default=250.0, help="Wire chamber range (+/-)")
 
     args = ap.parse_args()
 
-    if not args.ana_files and not args.ana_glob:
-        print("Error: Please provide files using --ana-files or --ana-glob")
-        return
-
-    # Resolve files
+    files = []
     if args.ana_files:
-        files = args.ana_files
-    else:
-        files = glob.glob(args.ana_glob)
+        files.extend(args.ana_files)
+    if args.ana_glob:
+        files.extend(glob.glob(args.ana_glob))
     
-    files = _sort_files(files)
+    # Remove duplicates and sort
+    files = _sort_files(list(set(files)))
     
     if not files:
-        print("No files found!")
+        print("Error: No files found! Use arguments to provide files or --ana-glob.")
         return
 
     print(f"Found {len(files)} files.")
-    os.makedirs(args.outdir, exist_ok=True)
-
+    
     # Process each requested channel
     for ch in TARGET_CHANNELS:
         process_channel(ch, files, args)

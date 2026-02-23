@@ -293,6 +293,19 @@ def process_channel(ch_code, files, args):
                 if len(t_plot) < 10:
                     print("    [SKIP] Not enough events after cuts.")
                     continue
+                
+                # ==========================================
+                # CALCULATE CORRELATION
+                # ==========================================
+                try:
+                    corr_x = np.corrcoef(t_plot, x_plot)[0, 1]
+                except:
+                    corr_x = 0.0
+                
+                try:
+                    corr_y = np.corrcoef(t_plot, y_plot)[0, 1]
+                except:
+                    corr_y = 0.0
 
                 # 5. Plotting
                 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.5, 11))
@@ -306,6 +319,11 @@ def process_channel(ch_code, files, args):
                 ax1.set_ylabel("Hodoscope X [mm]")
                 ax1.set_title(f"Run {run_id} - Channel {ch_code} - Timing vs Hodoscope X ({pid_tag})")
                 
+                # Add Correlation Score Text
+                ax1.text(0.95, 0.95, f"Corr: {corr_x:.4f}", 
+                        transform=ax1.transAxes, ha='right', va='top', 
+                        fontsize=12, fontweight='bold', bbox=dict(facecolor='white', alpha=0.8))
+
                 # Plot 2: tfinal vs Y
                 h2 = ax2.hist2d(t_plot, y_plot, bins=64, 
                                 range=[[args.tmin, args.tmax], [-args.pos_range, args.pos_range]],
@@ -314,7 +332,10 @@ def process_channel(ch_code, files, args):
                 ax2.set_xlabel(f"|t_final| Ch{ch_code} [ns]")
                 ax2.set_ylabel("Hodoscope Y [mm]")
                 ax2.set_title(f"Run {run_id} - Channel {ch_code} - Timing vs Hodoscope Y ({pid_tag})")
-            
+                # Add Correlation Score Text
+                ax2.text(0.95, 0.95, f"Corr: {corr_y:.4f}", 
+                        transform=ax2.transAxes, ha='right', va='top', 
+                        fontsize=12, fontweight='bold', bbox=dict(facecolor='white', alpha=0.8))
                 plt.tight_layout()
                 pdf.savefig(fig)
                 plt.close(fig)
