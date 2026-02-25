@@ -20,6 +20,10 @@ MIN_RAW = 500
 
 HSPACE = 0.10
 WSPACE = 0.05
+# ================= ADC CUT CONFIG =================
+AMP_THRESHOLD = 100.0  # Waveform must peak above this (baseline subtracted)
+MIN_ADC_CUT = -100.0
+
 
 # how many runs to print (mu,sigma) inside each cell
 CELL_STATS_MAXLINES = 3
@@ -150,6 +154,25 @@ def compute_pid_mask(tree, particle_type):
 
     return final_mask
 
+def compute_adc_mask(tree, code_str):
+    """
+    Computes ADC quality cuts for the GRID channel.
+    Uses drs_channel (raw waveforms) to cut on Amp and Min.
+    """
+    b, g, c = int(code_str[0]), int(code_str[1]), int(code_str[2])
+    drs_br = f"DRS_Board{b}_Group{g}_Channel{c}"
+    if drs_br not in tree:
+        return np.ones(tree.num_entries, dtype=bool)
+    
+    waves = tree[drs_br].array(library="ak")
+    baseline = ak.mean(waves[:, :30], axis=1)
+    waves_blsub = waves - baseline
+    
+    peak = ak.max(waves_blsub, axis=1)
+    min_adc = ak.min(waves_blsub, axis=1)
+    
+    mask = (peak >= AMP_THRESHOLD) & (min_adc >= MIN_ADC_CUT)
+    return ak.to_numpy(mask)
 # ================= MOSAIC GRIDS =================
 QUARTZ_GRID = [
     [None,  "002", None,  None],
@@ -536,6 +559,221 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
 
     print("Saved:", out)
 
+# ================= CORE: overlay mosaic =================
+def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
+                             tree_name, nbins, cut_min, min_entries, min_raw,
+                             particle_type=None):
+    os.makedirs(outdir, exist_ok=True)
+    
+    pid_tag = particle_type if particle_type else "NoPID"
+    tag = _fileset_tag(files, pid_tag)
+    out = os.path.join(outdir, f"HISTONLY_OVERLAY_{label}_{tag}.pdf")
+
+    bins = np.linspace(xlim[0], xlim[1], nbins + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
+
+    nrows = len(grid)
+    ncols = max(len(r) for r in grid)
+
+    # open
+    opened = []
+    labels_in_order = []
+    
+    print(f"--- Processing Mosaic for {pid_tag} ---")
+
+    for fpath in files:
+        try:
+            uf = uproot.open(fpath)
+            tree = uf[tree_name]
+            keys = set(tree.keys())
+            rl = _run_label(fpath)
+            
+            # --- COMPUTE PID MASK ONCE PER FILE ---
+            pid_mask = None
+            if particle_type:
+                pid_mask = compute_pid_mask(tree, particle_type)
+
+            opened.append((fpath, uf, tree, keys, rl, pid_mask))
+            labels_in_order.append(rl)
+        except Exception as e:
+            print(f"[WARN] failed to open {fpath}: {e}")
+
+    if len(opened) == 0:
+        raise RuntimeError("No readable input files.")
+
+    color_map = _build_color_map(labels_in_order)
+
+    # cell[(r,c)] = None OR {"code":..., "status":..., "items":[(rlabel,h,mu,sig,n), ...]}
+    cell = {}
+    global_ymax = 1
+
+    for r in range(nrows):
+        row = grid[r]
+        for c in range(ncols):
+            if c >= len(row) or row[c] is None:
+                cell[(r, c)] = None
+                continue
+
+            code = row[c]
+            b, g, ch = _parse_code(code)
+
+            if not _base_ok(g, ch):
+                cell[(r, c)] = {"code": code, "status": "veto", "items": []}
+                continue
+
+            k = _branch(b, g, ch)
+            items = []
+
+            for (_, _, tree, keys, rl, pid_mask) in opened:
+                if k not in keys:
+                    continue
+                try:
+                    # --- COMPUTE COMBINED MASK (PID + ADC CUTS) ---
+                    # Start with PID mask if it exists, else all True
+                    combined_mask = pid_mask if pid_mask is not None else np.ones(tree.num_entries, dtype=bool)
+                    
+                    # Compute ADC Cut mask for this specific grid channel
+                    adc_mask = compute_adc_mask(tree, code)
+                    
+                    # Combine masks: event must pass PID AND ADC quality cuts
+                    combined_mask = combined_mask & adc_mask
+
+                    # Load tfinal and apply the combined mask
+                    arr = tree[k].array(library="np")
+                    
+                    # Ensure shapes match before masking
+                    if arr.shape[0] == combined_mask.shape[0]:
+                        arr = arr[combined_mask]
+                    else:
+                        print(f"[WARN] Shape mismatch in {rl}: {k} len={arr.shape[0]}, mask len={combined_mask.shape[0]}")
+                        continue
+
+                except Exception as e:
+                    print(f"[ERROR] processing channel {code} in {rl}: {e}")
+                    continue
+                
+                arr = _prep(arr, xlim, cut_min, min_entries, min_raw)
+                if arr is None:
+                    continue
+
+                mu = float(arr.mean())
+                sig = float(arr.std())
+                n = int(arr.size)
+
+                h, _ = np.histogram(arr, bins=bins)
+                if h.sum() == 0:
+                    continue
+
+                items.append((rl, h, mu, sig, n))
+                global_ymax = max(global_ymax, int(h.max()))
+
+            if len(items) == 0:
+                cell[(r, c)] = {"code": code, "status": "nostats", "items": []}
+            else:
+                items = sorted(items, key=lambda x: (_extract_int(x[0], r"run(\d+)"),
+                                                     _extract_int(x[0], r"_(\d{11,12})")))
+                cell[(r, c)] = {"code": code, "status": "ok", "items": items}
+
+    # close files
+    for (_, uf, _, _, _, _) in opened:
+        try:
+            uf.close()
+        except Exception:
+            pass
+
+    # ---------- PDF ----------
+    with PdfPages(out) as pdf:
+        # PAGE 1: mosaic
+        fig, axes = plt.subplots(nrows, ncols, figsize=(11.5, 2.0 * nrows), sharex=True, sharey=True)
+        if nrows == 1 and ncols == 1:
+            axes = np.array([[axes]])
+        elif nrows == 1:
+            axes = np.array([axes])
+        elif ncols == 1:
+            axes = np.array([[ax] for ax in axes])
+
+        legend_handles = {}
+
+        for rr in range(nrows):
+            for cc in range(ncols):
+                ax = axes[rr, cc]
+                ax.set_xlim(*xlim)
+                ax.set_ylim(0, global_ymax * 1.05)
+                ax.tick_params(labelsize=8)
+
+                entry = cell.get((rr, cc))
+                if entry is None:
+                    ax.axis("off")
+                    continue
+
+                code = entry["code"]
+                status = entry["status"]
+
+                if status != "ok":
+                    ax.text(0.5, 0.5, f"{code}\n({status})",
+                            ha="center", va="center", transform=ax.transAxes, fontsize=9)
+                    continue
+
+                for (rl, h, mu, sig, n) in entry["items"]:
+                    color = color_map[rl]
+                    ln, = ax.step(centers, h, where="mid", linewidth=1.0, alpha=0.95, color=color)
+                    ax.fill_between(centers, h, step="mid", alpha=0.16, color=color)
+                    if rl not in legend_handles:
+                        legend_handles[rl] = ln
+
+                ax.set_title(code, fontsize=9, pad=2)
+
+                top = sorted(entry["items"], key=lambda x: x[4], reverse=True)[:CELL_STATS_MAXLINES]
+                if len(top) > 0:
+                    lines = [f"{rl}: μ={mu:.2f}, σ={sig:.2f}" for (rl, _, mu, sig, _) in top]
+                    if len(entry["items"]) > CELL_STATS_MAXLINES:
+                        lines.append(f"+{len(entry['items']) - CELL_STATS_MAXLINES} more")
+                    ax.text(0.02, 0.98, "\n".join(lines),
+                            transform=ax.transAxes, ha="left", va="top",
+                            fontsize=7,
+                            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.75, edgecolor="none"))
+
+        for ax in axes[-1, :]:
+            if ax.axison and ax.get_visible():
+                ax.set_xlabel(_xlabel())
+        
+        # Include ADC Cut info in the title/label for clarity
+        adc_info = f" | ADC: Amp>{AMP_THRESHOLD}, Min>{MIN_ADC_CUT}"
+        _global_ylabel(fig, f"Events ({pid_tag}){adc_info}")
+        _tighten(fig, left=0.05, right=0.98, top=0.985, bottom=0.035, hspace=0.10, wspace=0.04)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+        # PAGE 2: legend-only
+        legend_labels = sorted(list(legend_handles.keys()),
+                               key=lambda s: (_extract_int(s, r"run(\d+)"), _extract_int(s, r"_(\d{11,12})")))
+        handles = [legend_handles[k] for k in legend_labels]
+
+        nitems = len(legend_labels)
+        max_per_col = 28
+        ncol = max(1, int(np.ceil(nitems / max_per_col)))
+        fontsize = 11 if ncol == 1 else 10 if ncol == 2 else 9
+
+        fig2 = plt.figure(figsize=(8.5, 11))
+        ax2 = fig2.add_subplot(111)
+        ax2.axis("off")
+        ax2.set_title(f"{label} overlays legend ({tag})\nPID: {pid_tag}{adc_info}",
+                      fontsize=13, pad=12)
+
+        fig2.legend(handles, legend_labels,
+                    loc="center",
+                    fontsize=fontsize,
+                    frameon=False,
+                    ncol=ncol,
+                    columnspacing=1.2,
+                    handlelength=2.2,
+                    handletextpad=0.8)
+
+        pdf.savefig(fig2)
+        plt.close(fig2)
+
+    print("Saved:", out)
+
 def gaussian(x, amp, mean, sigma):
     return amp * np.exp(-(x - mean)**2 / (2 * sigma**2))
 
@@ -673,7 +911,161 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
         plt.close(fig)
 
     print("Saved:", out)
+    
+# ================= NEW: single-channel overlay for 104 =================
+def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
+                                    tree_name, nbins, cut_min, min_entries, min_raw,
+                                    particle_type=None):
+    os.makedirs(outdir, exist_ok=True)
+    
+    pid_tag = particle_type if particle_type else "NoPID"
+    tag = _fileset_tag(files, pid_tag)
+    out = os.path.join(outdir, f"CHANNEL_{code_str}_FIT_OVERLAY_{label}_{tag}_w_adccuts.pdf")
 
+    # Parse which hardware channel corresponds to this code
+    b, g, ch = _parse_code(code_str)
+    k = _branch(b, g, ch) # tfinal branch
+
+    bins = np.linspace(xlim[0], xlim[1], nbins + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
+
+    opened = []
+    labels_in_order = []
+    
+    print(f"--- Processing Single Channel {code_str} for {pid_tag} ---")
+    
+    for fpath in files:
+        try:
+            uf = uproot.open(fpath)
+            tree = uf[tree_name]
+            keys = set(tree.keys())
+            rl = _run_label(fpath)
+            
+            # --- COMPUTE PID MASK ---
+            pid_mask = None
+            if particle_type:
+                pid_mask = compute_pid_mask(tree, particle_type)
+
+            opened.append((uf, tree, keys, rl, pid_mask))
+            labels_in_order.append(rl)
+        except Exception as e:
+            print(f"[WARN] failed to open {fpath}: {e}")
+
+    if not opened: return
+
+    color_map = _build_color_map(labels_in_order)
+    items = []  
+
+    for (uf, tree, keys, rl, pid_mask) in opened:
+        if k not in keys: continue
+        try:
+            # 1. LOAD TFINAL DATA
+            arr = tree[k].array(library="np")
+            
+            # 2. COMPUTE COMBINED MASK (PID + ADC CUTS)
+            combined_mask = pid_mask if pid_mask is not None else np.ones(tree.num_entries, dtype=bool)
+            
+            # Use compute_adc_mask which analyzes raw waveforms
+            adc_mask = compute_adc_mask(tree, code_str)
+            combined_mask = combined_mask & adc_mask
+            
+            # 3. APPLY MASK
+            if arr.shape[0] == combined_mask.shape[0]:
+                arr = arr[combined_mask]
+            else:
+                print(f" [WARN] Shape mismatch in {rl}: data={arr.shape[0]}, mask={combined_mask.shape[0]}")
+                continue
+        except Exception as e:
+            print(f" [ERROR] Failed masking in {rl}: {e}")
+            continue
+
+        arr = _prep(arr, xlim, cut_min, min_entries, min_raw)
+        if arr is None: continue
+
+        mode, max_counts, h = _mode_from_hist(arr, bins)
+        if h.sum() == 0: continue
+
+        # --- NORMALIZATION ---
+        if h.max() > 0:
+            h = h / h.max()
+
+        # Focus tightly on the main peak
+        fit_window = 1.5 
+        mask = (centers >= mode - fit_window) & (centers <= mode + fit_window)
+        x_fit = centers[mask]
+        y_fit = h[mask]
+
+        fit_mu, fit_sig, fwhm = np.nan, np.nan, np.nan
+        y_gauss = None
+
+        if len(x_fit) > 4:
+            try:
+                # p0: [Amplitude, Mean, Sigma]
+                p0 = [1.0, mode, 0.3]
+                popt, _ = curve_fit(gaussian, x_fit, y_fit, p0=p0)
+                fit_amp = popt[0]
+
+                fit_mu = popt[1]
+                fit_sig = abs(popt[2])
+                # --- 2. THE PEAK=1.0 FIX ---
+                # Re-normalize data so the peak of the smooth curve is exactly 1.0
+                if fit_amp > 0:
+                    h = h / fit_amp
+                    y_gauss = gaussian(x_fit, 1.0, fit_mu, fit_sig)
+                else:
+                    y_gauss = gaussian(x_fit, *popt)
+
+                fwhm = 2.355 * fit_sig
+            except:
+                fit_mu, fit_sig = mode, float(arr.std())
+                fwhm = 2.355 * fit_sig
+
+        items.append((rl, h, mode, fit_mu, fit_sig, fwhm, int(arr.size), x_fit, y_gauss))
+
+    # Close handles
+    for (uf, _, _, _, _) in opened:
+        try: uf.close()
+        except: pass
+
+    items = sorted(items, key=lambda x: (_extract_int(x[0], r"run(\d+)"), _extract_int(x[0], r"_(\d{11,12})")))
+
+    # --- Plotting ---
+    with PdfPages(out) as pdf:
+        fig, ax = plt.subplots(figsize=(12, 8)) 
+        ax.set_xlim(*xlim)
+        ax.set_ylim(0, 1.3)
+        ax.set_xlabel(_xlabel())
+        ax.set_ylabel(f"Normalized Events (Peak=1.0)")
+        
+        # Updated title to include ADC cut confirmation
+        adc_title = f"Amp>{AMP_THRESHOLD}, Min>{MIN_ADC_CUT}"
+        ax.set_title(f"Channel {code_str}: Peak Fitting (PID: {pid_tag} | {adc_title})", fontsize=14)
+
+        handles, labels = [], []
+
+        for (rl, h, mode, f_mu, f_sig, fwhm, n, x_f, y_f) in items:
+            color = color_map[rl]
+            ax.step(centers, h, where="mid", lw=1.0, alpha=0.3, color=color)
+            
+            if y_f is not None:
+                line, = ax.plot(x_f, y_f, color=color, lw=2.5)
+                handles.append(line)
+            else:
+                line = ax.axvline(mode, color=color, ls='--')
+                handles.append(line)
+            
+            legend_str = (f"{rl}: Mean={f_mu:.3f}, $\sigma$={f_sig:.3f}, "
+                          f"FWHM={fwhm:.3f} (N={n})")
+            labels.append(legend_str)
+
+        ax.legend(handles, labels, fontsize=8, ncol=2, frameon=True, 
+                  loc="upper right", bbox_to_anchor=(1.0, 1.0))
+        
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    print("Saved:", out)
 # ================= MAIN =================
 def main():
     global NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, HSPACE, WSPACE, CELL_STATS_MAXLINES
