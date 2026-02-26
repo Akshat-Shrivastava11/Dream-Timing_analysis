@@ -211,6 +211,7 @@ def style_paper_axes(ax, xlabel, ylabel):
 def create_z_toa_plot(plot_data, outdir, pid_label):
     pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.pdf")
     
+    print("\n--- Fit Results & Speeds ---")
     with PdfPages(pdf_path) as pdf:
         # PAGE 1: With Points & Error Bars
         fig1, ax1 = plt.subplots(figsize=(8, 6))
@@ -220,7 +221,7 @@ def create_z_toa_plot(plot_data, outdir, pid_label):
         
         # Style both axes identically
         for ax in [ax1, ax2]:
-            style_paper_axes(ax, "Z Position [mm]", "Time Of Arrival Mean [ns]")
+            style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]")
             ax.set_title(f"TOA vs. Z Position ({pid_label})", pad=15)
         
         for family_name, data in plot_data.items():
@@ -235,10 +236,24 @@ def create_z_toa_plot(plot_data, outdir, pid_label):
             color = FAMILIES[family_name]["color"]
             
             # Linear Fit
-            # Using polyfit; w is weights. Assuming larger sigma = less weight.
-            # Using 1/sig_arr as weights if sigmas are not zero.
             weights = np.where(sig_arr > 0, 1.0 / sig_arr, 1.0) 
             slope, intercept = np.polyfit(z_arr, mu_arr, 1, w=weights)
+            
+            # ---> SPEED CALCULATION IS HERE <---
+            # slope units: ns/mm. Inverse slope: mm/ns. 1 mm/ns = 1e6 m/s
+            if slope != 0:
+                speed_m_s = abs(1.0 / slope) * 1e6
+                exponent = int(np.floor(np.log10(speed_m_s)))
+                mantissa = speed_m_s / (10**exponent)
+                
+                # Math text formatting for a beautiful LaTeX-style legend
+                speed_str = r"$v = {:.2f} \times 10^{{{}}}$ m/s".format(mantissa, exponent)
+                print(f"{family_name:<10} : {speed_m_s:.2e} m/s")
+            else:
+                speed_str = r"$v = $ undefined"
+                print(f"{family_name:<10} : undefined (slope=0)")
+                
+            legend_label_with_speed = f"{legend_name} ({speed_str})"
             
             # Generate points for the line
             z_fit = np.linspace(min(z_arr) - 20, max(z_arr) + 20, 100)
@@ -247,10 +262,10 @@ def create_z_toa_plot(plot_data, outdir, pid_label):
             # Add to Figure 1 (With Points)
             ax1.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, 
                          elinewidth=1.5, capsize=3, markersize=6, alpha=0.8)
-            ax1.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=legend_name)
+            ax1.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=legend_label_with_speed)
             
             # Add to Figure 2 (Lines Only)
-            ax2.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=legend_name)
+            ax2.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=legend_label_with_speed)
 
         # Finalize and save
         for fig, ax in [(fig1, ax1), (fig2, ax2)]:
@@ -259,7 +274,7 @@ def create_z_toa_plot(plot_data, outdir, pid_label):
             pdf.savefig(fig)
             plt.close(fig)
 
-    print(f"Paper-worthy plot saved to: {pdf_path}")
+    print(f"\nPaper-worthy plot saved to: {pdf_path}")
 
 # ================= MAIN DATA EXTRACTION =================
 def generate_stats_table(files, outpath, tree_name, particle_type=None):
@@ -403,7 +418,7 @@ def main():
     ap.add_argument("--run-max", type=int, default=None, help="Keep only runs <= run-max")
     ap.add_argument("--tree", default=TREE_NAME, help="Tree name")
     ap.add_argument("--outdir", default="./TRUE-HGtiming/calibration_studiesZ/tables", help="Output directory")
-    ap.add_argument("--pid", default=None, choices=["muon", "pion", "electron", "proton"], help="Apply PID selection")
+    ap.add_argument("--pid", default='electron', choices=["muon", "pion", "electron", "proton"], help="Apply PID selection")
 
     args = ap.parse_args()
 
