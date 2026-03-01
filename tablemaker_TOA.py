@@ -22,9 +22,9 @@ MIN_ADC_CUT = -100.0
 
 # ================= DETECTOR FAMILY CONFIG =================
 FAMILIES = {
-    "Plastic": {"channels": ["100", "110"], "tmin": 11.5, "tmax": 14.5, "legend": "Cherenkov-Plastic", "color": "red"},
-    "Quartz":  {"channels": ["104", "304"], "tmin": 11.5, "tmax": 15.0, "legend": "Cherenkov-Quartz", "color": "blue"},
-    "SCI":     {"channels": ["105", "107"], "tmin":  9.5, "tmax": 13.5, "legend": "Scintilating",      "color": "green"}
+    "Plastic": {"channels": ["100","102","112", "110"], "tmin": 11.5, "tmax": 14.5, "legend": "Cherenkov-Plastic", "color": "red"},
+    "Quartz":  {"channels": ["104","106", "304","114"], "tmin": 11.5, "tmax": 15.0, "legend": "Cherenkov-Quartz", "color": "blue"},
+    "SCI":     {"channels": ["105", "107","111","117"], "tmin":  9.5, "tmax": 13.5, "legend": "Scintilating",      "color": "green"}
 }
 
 # ================= Z POSITION MAPPING =================
@@ -261,7 +261,7 @@ def create_z_toa_plot(plot_data, outdir, pid_label):
             
             # Add to Figure 1 (With Points)
             ax1.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, 
-                         elinewidth=1.5, capsize=3, markersize=6, alpha=0.8)
+                         elinewidth=1.5, capsize=3, markersize=4, alpha=0.8)
             ax1.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=legend_label_with_speed)
             
             # Add to Figure 2 (Lines Only)
