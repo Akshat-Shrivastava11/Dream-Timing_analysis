@@ -192,90 +192,68 @@ def _mode_from_hist(arr, bins):
 
 def gaussian(x, amp, mean, sigma):
     return amp * np.exp(-(x - mean)**2 / (2 * sigma**2))
-
-def style_paper_axes(ax, xlabel, ylabel):
-    ax.set_xlabel(xlabel, loc='right', fontsize=12, fontweight='medium')
-    ax.set_ylabel(ylabel, loc='top', fontsize=12, fontweight='medium')
+def style_paper_axes(ax, xlabel, ylabel, particle_type):
+    # Position labels at the ends of axes
+    ax.set_xlabel(xlabel, loc='right', fontsize=14)
+    ax.set_ylabel(ylabel, loc='top', fontsize=14)
     
+    # Tick formatting for HEP style
     ax.xaxis.set_minor_locator(AutoMinorLocator())
     ax.yaxis.set_minor_locator(AutoMinorLocator())
+    ax.tick_params(which='both', direction='in', top=True, right=True, labelsize=12)
+    ax.tick_params(which='major', length=8)
+    ax.tick_params(which='minor', length=4)
     
-    ax.grid(True, which='major', linestyle='-', alpha=0.3)
-    ax.grid(True, which='minor', linestyle=':', alpha=0.2)
-    ax.grid(True, which='both', linestyle=':', alpha=0.6)
+    # Combined single-line header above the plot
+    # "e+" is often used for Positrons in these plots
+    display_name = "Positron" if particle_type.lower() == "electron" else particle_type.capitalize()
+    header_text = r"$\mathbf{CaloX}$" + f"  40 GeV {display_name}"
     
-    ax.tick_params(which='both', direction='in', top=True, right=True, length=6)
-    ax.tick_params(which='minor', length=3)
+    ax.text(0.0, 1.02, header_text, 
+            transform=ax.transAxes, fontsize=14, 
+            va='bottom', ha='left', color='black')
 
-# ================= PLOTTING FUNCTION =================
-def create_z_toa_plot(plot_data, outdir, pid_label):
+def create_z_toa_plot(plot_data, outdir, pid_label, particle_type):
     pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.pdf")
     
-    print("\n--- Fit Results & Speeds ---")
     with PdfPages(pdf_path) as pdf:
-        # PAGE 1: With Points & Error Bars
-        fig1, ax1 = plt.subplots(figsize=(8, 6))
+        fig, ax = plt.subplots(figsize=(8, 7))
         
-        # PAGE 2: Lines Only
-        fig2, ax2 = plt.subplots(figsize=(8, 6))
-        
-        # Style both axes identically
-        for ax in [ax1, ax2]:
-            style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]")
-            ax.set_title(f"TOA vs. Z Position ({pid_label})", pad=15)
+        style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
         
         for family_name, data in plot_data.items():
-            if not data["z"]:
-                continue
+            if not data["z"]: continue
                 
             z_arr = np.array(data["z"])
             mu_arr = np.array(data["mu"])
             sig_arr = np.array(data["sig"])
-            
-            legend_name = FAMILIES[family_name]["legend"]
             color = FAMILIES[family_name]["color"]
             
             # Linear Fit
             weights = np.where(sig_arr > 0, 1.0 / sig_arr, 1.0) 
             slope, intercept = np.polyfit(z_arr, mu_arr, 1, w=weights)
             
-            # ---> SPEED CALCULATION IS HERE <---
-            # slope units: ns/mm. Inverse slope: mm/ns. 1 mm/ns = 1e6 m/s
-            if slope != 0:
-                speed_m_s = abs(1.0 / slope) * 1e6
-                exponent = int(np.floor(np.log10(speed_m_s)))
-                mantissa = speed_m_s / (10**exponent)
-                
-                # Math text formatting for a beautiful LaTeX-style legend
-                speed_str = r"$v = {:.2f} \times 10^{{{}}}$ m/s".format(mantissa, exponent)
-                print(f"{family_name:<10} : {speed_m_s:.2e} m/s")
-            else:
-                speed_str = r"$v = $ undefined"
-                print(f"{family_name:<10} : undefined (slope=0)")
-                
-            legend_label_with_speed = f"{legend_name} ({speed_str})"
+            speed_m_s = abs(1.0 / slope) * 1e6 if slope != 0 else 0
+            exponent = int(np.floor(np.log10(speed_m_s))) if speed_m_s > 0 else 0
+            mantissa = speed_m_s / (10**exponent) if speed_m_s > 0 else 0
             
-            # Generate points for the line
+            speed_legend = r"{} ($v \approx {:.2f} \times 10^{{{}}}$ m/s)".format(
+                FAMILIES[family_name]["legend"], mantissa, exponent
+            )
+            
             z_fit = np.linspace(min(z_arr) - 20, max(z_arr) + 20, 100)
             t_fit = slope * z_fit + intercept
             
-            # Add to Figure 1 (With Points)
-            ax1.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, 
-                         elinewidth=1.5, capsize=3, markersize=4, alpha=0.8)
-            ax1.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=legend_label_with_speed)
-            
-            # Add to Figure 2 (Lines Only)
-            ax2.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=legend_label_with_speed)
+            ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, capsize=3, markersize=4)
+            ax.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=speed_legend)
 
-        # Finalize and save
-        for fig, ax in [(fig1, ax1), (fig2, ax2)]:
-            ax.legend(loc="best", frameon=True, fontsize=10)
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
-
-    print(f"\nPaper-worthy plot saved to: {pdf_path}")
-
+        # Move legend to top left, remove frame for a cleaner look
+        ax.legend(loc="upper left", frameon=False, fontsize=10)
+        
+        # Adjust top margin to ensure the external header isn't cut off
+        fig.subplots_adjust(top=0.92) 
+        pdf.savefig(fig)
+        plt.close(fig)
 # ================= MAIN DATA EXTRACTION =================
 def generate_stats_table(files, outpath, tree_name, particle_type=None):
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
@@ -408,7 +386,9 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
     
     # Generate the requested plots
     pid_label = f"PID_{particle_type}" if particle_type else "AllParticles"
-    create_z_toa_plot(plot_data, os.path.dirname(outpath), pid_label)
+    #create_z_toa_plot(plot_data, os.path.dirname(outpath), pid_label)
+    # Change this line at the bottom of generate_stats_table:
+    create_z_toa_plot(plot_data, os.path.dirname(outpath), pid_label, particle_type)
 
 def main():
     ap = argparse.ArgumentParser()
