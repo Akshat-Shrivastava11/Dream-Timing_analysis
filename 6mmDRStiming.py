@@ -13,9 +13,9 @@ from scipy.optimize import curve_fit
 # ================= DEFAULTS =================
 TREE_NAME = "EventTree"
 
-NBINS = 200
+NBINS = 10
 CUT_MIN = 1.0
-MIN_ENTRIES = 200
+MIN_ENTRIES = 100
 MIN_RAW = 500
 
 HSPACE = 0.10
@@ -178,6 +178,78 @@ def compute_adc_mask(tree, code_str):
 # A visual "hole" of empty rows is inserted between the top section 
 # (0xx/2xx) and bottom section (1xx/3xx) to represent the missing 3mm modules.
 
+QUARTZ_GRID = [
+    # --- Missing Top Section ---
+    
+    # --- Upper Body ---
+    [None,  None,  "617", "616", "615", "614", None,  None],
+    [None,  None,  "625", "624", "623", "622", None,  None],
+    [None,  "637", "631", "630", "627", "626", "636", None],
+    
+    # --- Main Body with 500-Series Side Wings ---
+    ["515", "514", "635", "634", "633", "632", "501", "500"],
+    [None,  None,  "002", None,  None,  None,  None,  None],
+    ["517", "516", "006", "004", "206", "204", "503", "502"],
+    [None,  None,  "016", "014", "216", "214", None,  None],
+    ["521", "520", "026", "024", "226", "224", "505", "504"],
+    [None,  None,  "030", None,  None,  None,  None,  None],
+    [None,  None,  "530", "034", "534", "234", None,  None],
+    ["523", "522", "106", "104", "306", "304", "507", "506"],
+    [None,  None,  "116", "114", "316", "314", None,  None],
+    ["525", "524", "126", "124", "326", "324", "511", "510"],
+    [None,  None,  "532", "134", "536", "334", None,  None],
+    ["527", "526", "403", "402", "401", "400", "513", "512"],
+    
+    # --- Lower Body ---
+    [None,  "437", "407", "406", "405", "404", "436", None],
+    [None,  None,  "413", "412", "411", "410", None,  None],
+    [None,  None,  "417", "416", "415", "414", None,  None],
+    
+
+]
+
+# ================= FULL 8-COLUMN PLASTIC GRID =================
+# Expanded to 8 columns to perfectly align vertically with the Quartz Grid.
+# The modules sit centrally in columns 2, 3, 4, and 5.
+# Single and double-digit labels from the layout are zero-padded (e.g. 0 -> "000").
+
+PLASTIC_GRID = [
+    # --- Top Section (Olive) ---
+    [None,  None,  "603", "602", "601", "600", None,  None],
+    [None,  None,  None,  "607", "606", None,  None,  None],
+    [None,  None,  "613", "612", "611", "610", None,  None],
+    
+    # --- Physical Gap ---
+    [None,  None,  None,  None,  None,  None,  None,  None],
+    [None,  None,  None,  None,  None,  None,  None,  None],
+    [None,  None,  None,  None,  None,  None,  None,  None],
+
+    # --- Middle Section (Red/Green) ---
+    [None,  None,  None,  "000", "202", "200", None,  None],
+    [None,  None,  "012", "010", "212", "210", None,  None],
+    [None,  None,  "022", "020", "222", "220", None,  None],
+    [None,  None,  "032", None,  "232", "230", None,  None],
+    
+    # --- Physical Gap ---
+    [None,  None,  None,  None,  None,  None,  None,  None],
+
+    # --- Middle Section (Blue/Purple) ---
+    [None,  None,  "102", "100", "302", "300", None,  None],
+    [None,  None,  "112", "110", "312", "310", None,  None],
+    [None,  None,  "122", "120", "322", "320", None,  None],
+    [None,  None,  "132", "130", "332", "330", None,  None],
+    
+    # --- Physical Gap ---
+    [None,  None,  None,  None,  None,  None,  None,  None],
+    [None,  None,  None,  None,  None,  None,  None,  None],
+    [None,  None,  None,  None,  None,  None,  None,  None],
+
+    # --- Bottom Section (Teal) ---
+    [None,  None,  "425", "424", "423", "422", None,  None],
+    [None,  None,  None,  "427", "426", None,  None,  None],
+    [None,  None,  "433", "432", "431", "430", None,  None],
+]
+
 SCI_GRID = [
     [None,None,"605","604",None,None],
     [None,None,None,None,None,None],
@@ -191,13 +263,7 @@ SCI_GRID = [
     [None,"023","021","223","221",None],
     [None,"027","025","227","225",None],
     [None,"033","031","233","231",None],
-    [None,None,"035",None,"235",None],
-    # --- 3MM HOLE START ---
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    # --- 3MM HOLE END ---
+    [None,'531',"035",'535',"235",None],
     [None,"103","101","303","301",None],
     [None,"107","105","307","305",None],
     [None,"113","111","313","311",None],
@@ -213,65 +279,7 @@ SCI_GRID = [
     [None,None,"425","434",None,None],
 ]
 
-QUARTZ_GRID = [
-    [None,"603","602","601","600",None],
-    [None,"697","606",None,None,None],
-    [None,"613","612","611","610",None],
-    [None,"617","616","615","614",None],
-    [None,"625","624","623","622",None],
-    ["637","631","630","627","626","636"],
-    [None,"635","634","633","632",None],
-    [None,None,None,None,None,None], 
-    [None,None,None,None,None,None], 
-    [None,"016","014","216","214",None],
-    [None,"026","024","226","224",None],
-    [None,None,"030",None,None,None],
-    [None,None,"034",None,None,None],
-    # --- 3MM HOLE START ---
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    # --- 3MM HOLE END ---
-    [None,"106","104","306","304",None],
-    [None,"116","114","316","314",None],
-    [None,"126","124","326","324",None],
-    [None,"532","134","536","334",None],
-    [None,"403","402","401","400",None],
-    ["437","407","406","405","404","436"],
-    [None,"413","412","411","410",None],
-    [None,"417","416","415","414",None],
-    [None,"425","424","423","422",None],
-    [None,None,"427","426",None,None],
-    [None,"433","432","431","430",None],
-]
 
-PLASTIC_GRID = [
-    [None,"603","602","601","600",None],
-    [None,"697","606",None,None,None],
-    [None,"613","612","611","610",None],
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    [None,"000","202","200",None,None],
-    [None,"012","010","212","210",None],
-    [None,"022","020","222","220",None],
-    [None,"032",None,"232","230",None],
-    # --- 3MM HOLE START ---
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    # --- 3MM HOLE END ---
-    [None,"102","100","302","300",None],
-    [None,"112","110","312","310",None],
-    [None,"122","120","322","320",None],
-    [None,"132","130","332","330",None],
-    [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
-    [None,"425","424","423","422",None],
-    [None,None,"427","426",None,None],
-    [None,"433","432","431","430",None],
-]
 # ================= HELPERS =================
 def _xlabel():
     return r"$|t_{\mathrm{final}}|$ [ns]"
@@ -388,15 +396,16 @@ def _mode_from_hist(arr, bins):
     return (float(centers[idx]), int(h[idx]), h)
 
 # ================= 6MM DYNAMIC t_final CALCULATION =================
-def get_tfinal_6mm(tree, b, g, c):
+# ================= 6MM DYNAMIC t_final CALCULATION =================
+def get_tfinal_6mm(tree, b, g, c, suffix):
     """
-    Computes t_final for the 6mm setup on the fly from the LP2_50 branches:
-    t_final(b,g,c) = ( t(b,g,c) - t(b,g,8) ) - ( t(0,3,7) - t(0,3,8) )
+    Computes the ABSOLUTE VALUE of t_final for the 6mm setup on the fly:
+    |t_final(b,g,c)| = |( t(b,g,c) - t(b,g,8) ) - ( t(0,3,7) - t(0,3,8) )|
     """
-    br_sig     = f"DRS_Board{b}_Group{g}_Channel{c}_t_peak"
-    br_sig_ref = f"DRS_Board{b}_Group{g}_Channel8_t_peak"
-    br_trg     = f"DRS_Board0_Group3_Channel7_t_peak"
-    br_trg_ref = f"DRS_Board0_Group3_Channel8_t_peak"
+    br_sig     = f"DRS_Board{b}_Group{g}_Channel{c}{suffix}"
+    br_sig_ref = f"DRS_Board{b}_Group{g}_Channel8{suffix}"
+    br_trg     = f"DRS_Board0_Group3_Channel7{suffix}"
+    br_trg_ref = f"DRS_Board0_Group3_Channel8{suffix}"
     
     keys = tree.keys()
     for br in [br_sig, br_sig_ref, br_trg, br_trg_ref]:
@@ -413,18 +422,20 @@ def get_tfinal_6mm(tree, b, g, c):
     if not (arr_sig.shape == arr_sig_ref.shape == arr_trg.shape == arr_trg_ref.shape):
         return None
         
-    return (arr_sig - arr_sig_ref) - (arr_trg - arr_trg_ref)
-
-
+    t_final = (arr_sig - arr_sig_ref) - (arr_trg - arr_trg_ref)
+    
+    # Return absolute value natively
+    return np.abs(t_final)
 # ================= CORE: overlay mosaic =================
 def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
                              tree_name, nbins, cut_min, min_entries, min_raw,
-                             particle_type=None):
+                             suffix, particle_type=None):
     os.makedirs(outdir, exist_ok=True)
     
     pid_tag = particle_type if particle_type else "NoPID"
     tag = _fileset_tag(files, pid_tag)
-    out = os.path.join(outdir, f"HISTONLY_OVERLAY_{label}_{tag}.pdf")
+    safe_suffix = suffix.strip("_")
+    out = os.path.join(outdir, f"HISTONLY_OVERLAY_{label}_{safe_suffix}_{tag}.pdf")
 
     bins = np.linspace(xlim[0], xlim[1], nbins + 1)
     centers = 0.5 * (bins[1:] + bins[:-1])
@@ -432,11 +443,10 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
     nrows = len(grid)
     ncols = max(len(r) for r in grid)
 
-    # open
     opened = []
     labels_in_order = []
     
-    print(f"--- Processing Mosaic for {pid_tag} ---")
+    print(f"--- Processing Mosaic for {label} with suffix {suffix} ({pid_tag}) ---")
 
     for fpath in files:
         try:
@@ -445,7 +455,6 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
             keys = set(tree.keys())
             rl = _run_label(fpath)
             
-            # --- COMPUTE PID MASK ONCE PER FILE ---
             pid_mask = None
             if particle_type:
                 pid_mask = compute_pid_mask(tree, particle_type)
@@ -459,8 +468,6 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
         raise RuntimeError("No readable input files.")
 
     color_map = _build_color_map(labels_in_order)
-
-    # cell[(r,c)] = None OR {"code":..., "status":..., "items":[(rlabel,h,mu,sig,n), ...]}
     cell = {}
     global_ymax = 1
 
@@ -482,44 +489,46 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
 
             for (_, _, tree, keys, rl, pid_mask) in opened:
                 try:
-                    # Load tfinal dynamically using 6mm formula
-                    arr = get_tfinal_6mm(tree, b, g, ch)
+                    # 1. Load absolute t_final dynamically
+                    arr = get_tfinal_6mm(tree, b, g, ch, suffix)
                     if arr is None: 
                         continue
                     
-                    # --- COMPUTE COMBINED MASK (PID + ADC CUTS) ---
-                    # Start with PID mask if it exists, else all True
+                    # 2. Apply Combined Mask (PID + ADC)
                     combined_mask = pid_mask if pid_mask is not None else np.ones(tree.num_entries, dtype=bool)
-                    
-                    # Compute ADC Cut mask for this specific grid channel
-                    adc_mask = compute_adc_mask(tree, code)
-                    combined_mask = combined_mask & adc_mask
+                    #adc_mask = compute_adc_mask(tree, code)
+                    #combined_mask = combined_mask & adc_mask
 
-                    # Apply the combined mask
                     if arr.shape[0] == combined_mask.shape[0]:
                         arr = arr[combined_mask]
                     else:
-                        print(f"[WARN] Shape mismatch in {rl}: len={arr.shape[0]}, mask len={combined_mask.shape[0]}")
+                        print(f"[WARN] Shape mismatch in {rl}: mask dropped.")
+                        continue
+                        
+                    # 3. Clean NaNs
+                    arr = arr[~np.isnan(arr)]
+                    
+                    # 4. Apply xlim boundaries (0 to xlim[1])
+                    arr = arr[(arr >= xlim[0]) & (arr <= xlim[1])]
+                    
+                    # 5. Relaxed Threshold (Min 25 events required to plot)
+                    if len(arr) < 25:
                         continue
 
+                    mu = float(arr.mean())
+                    sig = float(arr.std())
+                    n = int(arr.size)
+
+                    h, _ = np.histogram(arr, bins=bins)
+                    if h.sum() == 0:
+                        continue
+
+                    items.append((rl, h, mu, sig, n))
+                    global_ymax = max(global_ymax, int(h.max()))
+
                 except Exception as e:
-                    print(f"[ERROR] processing channel {code} in {rl}: {e}")
+                    print(f"[ERROR] Channel {code}: {e}")
                     continue
-                
-                arr = _prep(arr, xlim, cut_min, min_entries, min_raw)
-                if arr is None:
-                    continue
-
-                mu = float(arr.mean())
-                sig = float(arr.std())
-                n = int(arr.size)
-
-                h, _ = np.histogram(arr, bins=bins)
-                if h.sum() == 0:
-                    continue
-
-                items.append((rl, h, mu, sig, n))
-                global_ymax = max(global_ymax, int(h.max()))
 
             if len(items) == 0:
                 cell[(r, c)] = {"code": code, "status": "nostats", "items": []}
@@ -592,8 +601,8 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
                 ax.set_xlabel(_xlabel())
         
         # Include ADC Cut info in the title/label for clarity
-        adc_info = f" | ADC: Amp>{AMP_THRESHOLD}, Min>{MIN_ADC_CUT}"
-        _global_ylabel(fig, f"Events ({pid_tag}){adc_info}")
+        adc_info = f" | ADC: Amp>{AMP_THRESHOLD}, Min>{MIN_ADC_CUT} | Suffix: {suffix}"
+        adc_info = f"no ACD cut" 
         _tighten(fig, left=0.05, right=0.98, top=0.985, bottom=0.035, hspace=0.10, wspace=0.04)
         pdf.savefig(fig)
         plt.close(fig)
@@ -627,166 +636,6 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir,
         plt.close(fig2)
 
     print("Saved:", out)
-
-def gaussian(x, amp, mean, sigma):
-    return amp * np.exp(-(x - mean)**2 / (2 * sigma**2))
-
-# ================= NEW: single-channel overlay for 104 =================
-def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
-                                    tree_name, nbins, cut_min, min_entries, min_raw,
-                                    particle_type=None):
-    os.makedirs(outdir, exist_ok=True)
-    
-    pid_tag = particle_type if particle_type else "NoPID"
-    tag = _fileset_tag(files, pid_tag)
-    out = os.path.join(outdir, f"CHANNEL_{code_str}_FIT_OVERLAY_{label}_{tag}_w_adccuts.pdf")
-
-    # Parse which hardware channel corresponds to this code
-    b, g, ch = _parse_code(code_str)
-
-    bins = np.linspace(xlim[0], xlim[1], nbins + 1)
-    centers = 0.5 * (bins[1:] + bins[:-1])
-
-    opened = []
-    labels_in_order = []
-    
-    print(f"--- Processing Single Channel {code_str} for {pid_tag} ---")
-    
-    for fpath in files:
-        try:
-            uf = uproot.open(fpath)
-            tree = uf[tree_name]
-            keys = set(tree.keys())
-            rl = _run_label(fpath)
-            
-            # --- COMPUTE PID MASK ---
-            pid_mask = None
-            if particle_type:
-                pid_mask = compute_pid_mask(tree, particle_type)
-
-            opened.append((uf, tree, keys, rl, pid_mask))
-            labels_in_order.append(rl)
-        except Exception as e:
-            print(f"[WARN] failed to open {fpath}: {e}")
-
-    if not opened: return
-
-    color_map = _build_color_map(labels_in_order)
-    items = []  
-
-    for (uf, tree, keys, rl, pid_mask) in opened:
-        try:
-            # 1. LOAD TFINAL DATA dynamically using 6mm formula
-            arr = get_tfinal_6mm(tree, b, g, ch)
-            if arr is None: 
-                continue
-            
-            # 2. COMPUTE COMBINED MASK (PID + ADC CUTS)
-            combined_mask = pid_mask if pid_mask is not None else np.ones(tree.num_entries, dtype=bool)
-            
-            # Use compute_adc_mask which analyzes raw waveforms
-            adc_mask = compute_adc_mask(tree, code_str)
-            combined_mask = combined_mask & adc_mask
-            
-            # 3. APPLY MASK
-            if arr.shape[0] == combined_mask.shape[0]:
-                arr = arr[combined_mask]
-            else:
-                print(f" [WARN] Shape mismatch in {rl}: data={arr.shape[0]}, mask={combined_mask.shape[0]}")
-                continue
-        except Exception as e:
-            print(f" [ERROR] Failed masking in {rl}: {e}")
-            continue
-
-        arr = _prep(arr, xlim, cut_min, min_entries, min_raw)
-        if arr is None: continue
-
-        mode, max_counts, h = _mode_from_hist(arr, bins)
-        if h.sum() == 0: continue
-
-        # --- NORMALIZATION ---
-        if h.max() > 0:
-            h = h / h.max()
-
-        # Focus tightly on the main peak
-        fit_window = 1.5 
-        mask = (centers >= mode - fit_window) & (centers <= mode + fit_window)
-        x_fit = centers[mask]
-        y_fit = h[mask]
-
-        fit_mu, fit_sig, fwhm = np.nan, np.nan, np.nan
-        y_gauss = None
-
-        if len(x_fit) > 4:
-            try:
-                # p0: [Amplitude, Mean, Sigma]
-                p0 = [1.0, mode, 0.3]
-                popt, _ = curve_fit(gaussian, x_fit, y_fit, p0=p0)
-                fit_amp = popt[0]
-
-                fit_mu = popt[1]
-                fit_sig = abs(popt[2])
-                # --- 2. THE PEAK=1.0 FIX ---
-                # Re-normalize data so the peak of the smooth curve is exactly 1.0
-                if fit_amp > 0:
-                    h = h / fit_amp
-                    y_gauss = gaussian(x_fit, 1.0, fit_mu, fit_sig)
-                else:
-                    y_gauss = gaussian(x_fit, *popt)
-
-                fwhm = 2.355 * fit_sig
-            except:
-                fit_mu, fit_sig = mode, float(arr.std())
-                fwhm = 2.355 * fit_sig
-
-        items.append((rl, h, mode, fit_mu, fit_sig, fwhm, int(arr.size), x_fit, y_gauss))
-
-    # Close handles
-    for (uf, _, _, _, _) in opened:
-        try: uf.close()
-        except: pass
-
-    items = sorted(items, key=lambda x: (_extract_int(x[0], r"run(\d+)"), _extract_int(x[0], r"_(\d{11,12})")))
-
-    # --- Plotting ---
-    with PdfPages(out) as pdf:
-        fig, ax = plt.subplots(figsize=(12, 8)) 
-        ax.set_xlim(*xlim)
-        ax.set_ylim(0, 1.3)
-        ax.set_xlabel(_xlabel())
-        ax.set_ylabel(f"Normalized Events (Peak=1.0)")
-        
-        # Updated title to include ADC cut confirmation
-        adc_title = f"Amp>{AMP_THRESHOLD}, Min>{MIN_ADC_CUT}"
-        ax.set_title(f"Channel {code_str}: Peak Fitting (PID: {pid_tag} | {adc_title})", fontsize=14)
-
-        handles, labels = [], []
-
-        for (rl, h, mode, f_mu, f_sig, fwhm, n, x_f, y_f) in items:
-            color = color_map[rl]
-            ax.step(centers, h, where="mid", lw=1.0, alpha=0.3, color=color)
-            
-            if y_f is not None:
-                line, = ax.plot(x_f, y_f, color=color, lw=2.5)
-                handles.append(line)
-            else:
-                line = ax.axvline(mode, color=color, ls='--')
-                handles.append(line)
-            
-            legend_str = (f"{rl}: Mean={f_mu:.3f}, $\sigma$={f_sig:.3f}, "
-                          f"FWHM={fwhm:.3f} (N={n})")
-            labels.append(legend_str)
-
-        ax.legend(handles, labels, fontsize=8, ncol=2, frameon=True, 
-                  loc="upper right", bbox_to_anchor=(1.0, 1.0))
-        
-        fig.tight_layout()
-        pdf.savefig(fig)
-        plt.close(fig)
-
-    print("Saved:", out)
-
-
 # ================= NEW: INVESTIGATE RAW TIMINGS =================
 # ================= NEW: INVESTIGATE RAW TIMINGS =================
 # ================= NEW: INVESTIGATE RAW TIMINGS =================
@@ -1014,10 +863,322 @@ def investigate_raw_timings(files, code_str, outdir, tree_name, particle_type=No
     print(f"\n========================================================")
     print(f"Saved Raw Investigation & Multi-MCP t_final to: {out}")
     print(f"========================================================\n")
+
+
+# ================= NEW: PAPER-WORTHY SINGLE CHANNEL FITS =================
+# ================= HELPERS FOR FITTING =================
+def gaussian_peak_1(x, mean, sigma):
+    """
+    A standard Gaussian function permanently locked to a peak amplitude of 1.0.
+    This perfectly aligns with your normalized histograms.
+    """
+    return np.exp(-0.5 * ((x - mean) / sigma)**2)
+# ================= NEW: PAPER-WORTHY SINGLE CHANNEL FITS =================
+def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
+                                    tree_name, nbins, cut_min, min_entries, min_raw,
+                                    suffixes, particle_type=None): 
+    os.makedirs(outdir, exist_ok=True)
+    
+    pid_tag = particle_type if particle_type else "NoPID"
+    tag = _fileset_tag(files, pid_tag)
+    out = os.path.join(outdir, f"FIT_CH{code_str}_{label}_CombinedTimings_{tag}.pdf")
+
+    b, g, ch = _parse_code(code_str)
+    
+    # Bins are generated strictly for your custom window
+    bins = np.linspace(xlim[0], xlim[1], nbins + 1)
+    centers = 0.5 * (bins[1:] + bins[:-1])
+
+    opened = []
+    labels_in_order = []
+    
+    print(f"--- Processing Fit for Channel {code_str} | {label} | Hard Cut Window: {xlim} ---")
+    
+    for fpath in files:
+        try:
+            uf = uproot.open(fpath)
+            tree = uf[tree_name]
+            keys = set(tree.keys())
+            rl = _run_label(fpath)
+            pid_mask = compute_pid_mask(tree, particle_type) if particle_type else None
+            opened.append((uf, tree, keys, rl, pid_mask))
+            labels_in_order.append(rl)
+        except Exception as e:
+            print(f"[WARN] failed to open {fpath}: {e}")
+
+    if not opened: return
+    color_map = _build_color_map(labels_in_order)
+
+    with PdfPages(out) as pdf:
+        for suffix in suffixes:
+            safe_suffix = suffix.strip("_")
+            items = []  
+
+            for (uf, tree, keys, rl, pid_mask) in opened:
+                try:
+                    arr = get_tfinal_6mm(tree, b, g, ch, suffix)
+                    if arr is None: continue
+                    arr = np.abs(arr)
+                    
+                    combined_mask = pid_mask if pid_mask is not None else np.ones(tree.num_entries, dtype=bool)
+                    
+                    # NOTE: Uncomment the below lines if you want the ADC cut active for fits
+                    # adc_mask = compute_adc_mask(tree, code_str)
+                    # combined_mask = combined_mask & adc_mask
+                    
+                    if arr.shape[0] == combined_mask.shape[0]:
+                        arr = arr[combined_mask]
+                    else: continue
+                        
+                    # HARD CUT: Strictly bound the data to your custom xlim window!
+                    arr = arr[~np.isnan(arr)]
+                    arr = arr[(arr >= xlim[0]) & (arr <= xlim[1])]
+                    
+                    if len(arr) < 25: continue
+
+                except Exception as e:
+                    continue
+
+                mode, max_counts, h = _mode_from_hist(arr, bins)
+                if h.sum() == 0 or h.max() == 0: continue
+
+                # Normalize histogram so the highest peak sits exactly at Y = 1.0
+                h_plot = h / h.max()
+
+                x_fit = centers
+                y_fit = h_plot
+
+                fit_mu, fit_sig, fwhm = np.nan, np.nan, np.nan
+                x_smooth, y_gauss = None, None
+
+                if len(x_fit) >= 4:
+                    try:
+                        # Initial guess: Mean = mode, Sigma = array standard deviation
+                        p0 = [mode, arr.std()]
+                        # Generous Bounds: Allow mean to wander slightly outside the visible window if skewed
+                        bounds = ([xlim[0] - 2.0, 0.001], [xlim[1] + 2.0, 10.0])
+                        
+                        popt, _ = curve_fit(gaussian_peak_1, x_fit, y_fit, p0=p0, bounds=bounds)
+                        
+                        fit_mu = popt[0]
+                        fit_sig = abs(popt[1])
+                        fwhm = 2.355 * fit_sig
+                            
+                    except Exception as e:
+                        print(f"    [WARN] Fit failed for {rl} ({safe_suffix}): {e}. Using raw statistics fallback.")
+                        # FALLBACK: If fit fails, use raw array statistics so the curve STILL draws
+                        fit_mu = float(arr.mean())
+                        fit_sig = float(arr.std())
+                        fwhm = 2.355 * fit_sig
+                    
+                    # GENERATE CURVE OUTSIDE TRY/EXCEPT SO IT ALWAYS DRAWS
+                    x_smooth = np.linspace(xlim[0], xlim[1], 500)
+                    y_gauss = gaussian_peak_1(x_smooth, fit_mu, fit_sig)
+
+                items.append((rl, h_plot, mode, fit_mu, fit_sig, fwhm, int(arr.size), x_smooth, y_gauss))
+
+            items = sorted(items, key=lambda x: (_extract_int(x[0], r"run(\d+)"), _extract_int(x[0], r"_(\d{11,12})")))
+
+            # --- Plot the Fit Page for this suffix ---
+            # --- Plot the Fit Page for this suffix ---
+            fig, ax = plt.subplots(figsize=(12, 8)) 
+            ax.set_xlim(*xlim)
+            ax.set_ylim(0, 1.4) 
+
+            # 1. Clean Axis Labels
+            # 1. Clean Axis Labels
+            ax.set_xlabel("Time of Arrival [ns]", fontsize=14, loc='right')
+            ax.set_ylabel("Normalized Events", fontsize=14, loc='top')
+
+            # 2. Create the single-line paper header
+            display_name = "Positron" if particle_type.lower() == "electron" else particle_type.capitalize()
+            timing_label = "L_{50}" if "LP2" in safe_suffix else "t_{peak}"
+            
+            # This strips away the "6MM-" and the "_PID_electron" 
+            fam_name = label.split('_')[0].replace("6MM-", "")
+            
+            # The clean header string (Note: {label} is completely removed)
+            header_text = r"$\mathbf{CaloX}$" + f"  40 GeV {display_name} | ${timing_label}$ | {fam_name} | {code_str}"
+
+            # Place text slightly above the plot (y=1.02)
+            ax.text(0.0, 1.02, header_text, transform=ax.transAxes, fontsize=12, va='bottom', ha='left')
+
+            # 3. Ticks
+            ax.minorticks_on()
+            ax.tick_params(axis='both', which='major', labelsize=12, length=6, direction='in', top=True, right=True)
+            ax.tick_params(axis='both', which='minor', length=3, direction='in', top=True, right=True)
+            # 4. Remove the secondary "fam_name" text if you want it strictly one line
+            # ax.text(0.03, 0.88, ...) # Comment this out if redundant with the header
+
+            #ax.text(0.03, 0.95, "CaloX", transform=ax.transAxes, fontsize=18, fontweight='bold', va='top', ha='left')
+            
+            #ax.text(0.03, 0.88, f"{fam_name} (Ch {code_str}) | {safe_suffix}", transform=ax.transAxes, fontsize=12, va='top', ha='left')
+
+            handles, labels_list = [], []
+            for (rl, h_plot, mode, f_mu, f_sig, fwhm, n, x_smooth, y_gauss) in items:
+                color = color_map[rl]
+                ax.step(centers, h_plot, where="mid", lw=1.2, alpha=0.4, color=color)
+                
+                # y_gauss will now always be populated!
+                if y_gauss is not None:
+                    line, = ax.plot(x_smooth, y_gauss, color=color, lw=2.5)
+                    handles.append(line)
+                else:
+                    line = ax.axvline(mode, color=color, ls='--')
+                    handles.append(line)
+                
+                legend_str = (f"{rl}: Mean={f_mu:.2f}, $\sigma$={f_sig:.2f}, FWHM={fwhm:.2f} (N={n})")
+                labels_list.append(legend_str)
+
+            if handles:
+                ax.legend(handles, labels_list, fontsize=9, ncol=1, frameon=False, loc="upper right")
+                
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    for (uf, _, _, _, _) in opened:
+        try: uf.close()
+        except: pass
+
+    print("Saved Fit:", out)
+
+
+# ================= NEW: 20-PAGE WAVEFORM GRID (L50 ONLY) =================
+# ================= NEW: 20-PAGE WAVEFORM GRID (L50 ONLY) =================
+def make_waveform_pdf(files, code_str, label, xlim, outdir, tree_name, particle_type=None, n_events=10):
+    """
+    Finds the mode of LP2_50 for the given channel strictly inside the xlim window.
+    Selects the closest 10 events (ignoring t_final = 0).
+    Plots 1 event across 2 pages (2 waveforms per page):
+      - Page 1: Main Channel & Group Ref
+      - Page 2: Board 0 MCP Trig & Board 0 MCP Ref
+    """
+    # Put these in a dedicated subdirectory
+    wf_dir = os.path.join(outdir, "WaveformPlots")
+    os.makedirs(wf_dir, exist_ok=True)
+    
+    # Safely extract just the 3-digit code even if label has text like "y: 936mm"
+    clean_code = re.sub(r'[^0-9]', '', code_str)[:3]
+    b, g, c = int(clean_code[0]), int(clean_code[1]), int(clean_code[2])
+    
+    pid_tag = particle_type if particle_type else "NoPID"
+    tag = _fileset_tag(files, pid_tag)
+    
+    safe_label = label.replace(":", "").replace(" ", "_")
+    out_name = os.path.join(wf_dir, f"Waveforms_CH{clean_code}_{safe_label}_{tag}_L50.pdf")
+    
+    main_br  = f"DRS_Board{b}_Group{g}_Channel{c}"
+    trig_br  = f"DRS_Board{b}_Group{g}_Channel8"
+    mcp_br   = f"DRS_Board0_Group3_Channel7"
+    trig3_br = f"DRS_Board0_Group3_Channel8"
+    suffix   = "_LP2_50"
+    
+    print(f"--- Processing Waveforms for {label} (Ch {clean_code}) in Window: {xlim} ---")
+    
+    with PdfPages(out_name) as pdf:
+        for fpath in files:
+            rl = _run_label(fpath)
+            try:
+                with uproot.open(fpath) as f:
+                    tree = f[tree_name]
+                    pid_mask = compute_pid_mask(tree, particle_type) if particle_type else np.ones(tree.num_entries, dtype=bool)
+                    
+                    tf_array = get_tfinal_6mm(tree, b, g, c, suffix)
+                    if tf_array is None: continue
+                    
+                    # Apply constraints: Ignore t_final = 0, remove NaNs, and STRICTLY bound to xlim
+                    valid_mask = pid_mask & ~np.isnan(tf_array) & (tf_array > 0)
+                    valid_mask = valid_mask & (tf_array >= xlim[0]) & (tf_array <= xlim[1])
+                    
+                    valid_indices = np.where(valid_mask)[0]
+                    if len(valid_indices) == 0: continue
+                    
+                    # Find Mode only within the region of interest
+                    valid_tf = tf_array[valid_indices]
+                    hist, bin_edges = np.histogram(valid_tf, bins=100, range=(xlim[0], xlim[1]))
+                    mode_tf = bin_edges[np.argmax(hist)] + (bin_edges[1]-bin_edges[0])/2.0
+                    
+                    # Select closest N events to that mode
+                    diffs = np.abs(tf_array[valid_indices] - mode_tf)
+                    sorted_valid_indices = valid_indices[np.argsort(diffs)]
+                    selected_evs = sorted_valid_indices[:n_events]
+
+                    # Group the 4 channels into 2 pages (2 channels per page)
+                    pages_config = [
+                        [ # Page 1
+                            (main_br, f"{main_br}{suffix}", f"Channel {clean_code}", "tab:blue"),
+                            (trig_br, f"{trig_br}{suffix}", f"Group Ref (B{b}G{g}C8)", "tab:orange")
+                        ],
+                        [ # Page 2
+                            (mcp_br,  f"{mcp_br}{suffix}",  f"MCP Trig (B0G3C7)", "tab:green"),
+                            (trig3_br,f"{trig3_br}{suffix}",f"MCP Ref (B0G3C8)", "tab:red")
+                        ]
+                    ]
+
+                    for ev in selected_evs:
+                        tf_val = tf_array[ev]
+
+                        for page_idx, page_plots in enumerate(pages_config):
+                            fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=False)
+
+                            for col_idx, (br, timing_br, plt_label, color) in enumerate(page_plots):
+                                ax = axes[col_idx]
+                                
+                                w = tree[br].array(entry_start=ev, entry_stop=ev+1, library="np")[0]
+                                timing_raw = tree[timing_br].array(entry_start=ev, entry_stop=ev+1, library="np")[0]
+                                
+                                baseline = np.mean(w[:30])
+                                w_sub = w - baseline 
+                                
+                                # ONLY flip the main channel to make it positive. Triggers/MCP stay as is.
+                                if br == main_br:
+                                    w_sub = -w_sub
+                                
+                                # Convert bins to true nanoseconds
+                                time_axis = np.arange(len(w)) * 0.2
+                                
+                                ax.plot(time_axis, w_sub, color=color, lw=2.0)
+                                
+                                if not np.isnan(timing_raw):
+                                    ax.axvline(x=timing_raw, color='black', linestyle='--', alpha=0.8, lw=2.0, label=f"L50: {timing_raw:.2f} ns")
+                                    ax.set_xlim(timing_raw - 15, timing_raw + 25)
+                                else:
+                                    ax.set_xlim(0, 200) 
+                                    ax.text(0.5, 0.5, "NaN Timing", transform=ax.transAxes, ha='center', color='red', fontsize=14)
+
+                                # Paper Formatting
+                                ax.minorticks_on()
+                                ax.tick_params(axis='both', which='major', labelsize=14, length=8, direction='in', top=True, right=True)
+                                ax.tick_params(axis='both', which='minor', length=4, direction='in', top=True, right=True)
+                                
+                                ax.set_xlabel("Time of Arrival [ns]", loc='right', fontsize=16)
+                                if col_idx == 0:
+                                    ax.set_ylabel("Amplitude [ADC Counts]", loc='top', fontsize=16)
+                                
+                                ax.set_title(plt_label, fontsize=18, fontweight='bold', pad=12)
+
+                                # Labels
+                                # CaloX in the TOP RIGHT (Fixed alignment: ha='right')
+                                ax.text(0.96, 0.95, "CaloX", transform=ax.transAxes, fontsize=22, fontweight='bold', va='top', ha='right', alpha=0.8)
+                                
+                                # Event info in the TOP LEFT
+                                ax.text(0.04, 0.95, f"Event: {ev}\n|t_final|: {tf_val:.2f} ns", transform=ax.transAxes, fontsize=14, va='top', ha='left')
+
+                                ax.legend(loc='lower right', frameon=False, fontsize=14)
+
+                            plt.tight_layout()
+                            pdf.savefig(fig)
+                            plt.close(fig)
+            except Exception as e:
+                print(f"Failed extracting waveforms from {fpath}: {e}")
+
+    print(f"Saved Waveforms to: {out_name}")
 # ================= MAIN =================
 def main():
     global NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, HSPACE, WSPACE, CELL_STATS_MAXLINES
 
+    
     ap = argparse.ArgumentParser()
     
     # Updated default to the specific 6mm run mentioned
@@ -1031,12 +1192,12 @@ def main():
     ap.add_argument("--run-max", type=int, default=None, help="Keep only runs <= run-max")
 
     ap.add_argument("--tree", default=TREE_NAME, help="Tree name")
-    ap.add_argument("--outdir", default="./TRUE-HGtiming/calibration_studiesZ/6mmtrial",
+    ap.add_argument("--outdir", default="./TRUE-HGtiming/calibration_studiesZ/6mmTiming_y1065centerofDream",
                     help="Output directory")
 
     # Updated default xlims for 6mm
-    ap.add_argument("--xmin", type=float, default=0.0, help="Min |tfinal|")
-    ap.add_argument("--xmax", type=float, default=500.0, help="Max |tfinal|")
+    ap.add_argument("--xmin", type=float, default=10.0, help="Min |tfinal|")
+    ap.add_argument("--xmax", type=float, default=20.0, help="Max |tfinal|")
     ap.add_argument("--nbins", type=int, default=NBINS, help="Histogram bins")
     ap.add_argument("--cut-min", type=float, default=CUT_MIN, help="Ignore |tfinal| < cut-min")
     ap.add_argument("--min-entries", type=int, default=MIN_ENTRIES, help="Min entries after cuts")
@@ -1045,7 +1206,7 @@ def main():
     ap.add_argument("--cell-stats-lines", type=int, default=CELL_STATS_MAXLINES,
                     help="How many run μ,σ lines to print inside each channel cell.")
 
-    ap.add_argument("--single-channel", default="605",
+    ap.add_argument("--single-channel", default="612",
                     help="3-digit code bgc to make a standalone overlay plot for (default: 104).")
 
     # PID ARGUMENT
@@ -1076,18 +1237,57 @@ def main():
     
     pid_label = f"PID_{args.pid}" if args.pid else "AllParticles"
 
-    # Only running the 6mm grids now
-    # make_mosaic_hist_overlay(files, QUARTZ_GRID,  f"6MM-Quartz_{pid_label}",       xlim, args.outdir,
-    #                          args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, args.pid)
-    # make_mosaic_hist_overlay(files, PLASTIC_GRID, f"6MM-Plastic_{pid_label}",      xlim, args.outdir,
-    #                          args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, args.pid)
-    # make_mosaic_hist_overlay(files, SCI_GRID,     f"6MM-Sci_{pid_label}",          xlim, args.outdir,
-    #                          args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, args.pid)
+    # 1. Define the 3 representative channels
+    # fit_channels = {
+    #     "SCI":         {"ch": "604 y: 936mm ", "xlim": (8.5, 11.0)},
+    #     "Plastic-CER": {"ch": "52 y: 936mm", "xlim": (11.0, 12.2)},
+    #     "Quartz-CER":  {"ch": "616 y: 936mm", "xlim": (11.0, 13.0)}
+    # }
 
-    # make_channel_overlay_with_modes(files, args.single_channel, f"6MM-ALL-RUNS_{pid_label}", xlim, args.outdir,
-    #                                 args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, args.pid)
+    suffixes = ["_t_peak", "_LP2_50"]
+    mosaic_xlim = (args.xmin, args.xmax)
 
-    investigate_raw_timings(files, args.single_channel, args.outdir, args.tree, args.pid)
+    # Iterate through both timing definitions and generate the plot sets
+    suffixes = ["_t_peak", "_LP2_50"]
+    
+
+    fit_channels = {
+        #"SCI":         {"ch": "105 y:1065mm ", "xlim": (8.5, 15.0)},
+        #"Plastic-CER": {"ch": "100 y:1065mm", "xlim": (10.0,15.0)},
+        "Quartz-CER":  {"ch": "523 y:1065mm", "xlim": (10.5, 13.5)}
+    }
+    # for suffix in suffixes:
+    #     make_mosaic_hist_overlay(files, QUARTZ_GRID,  f"6MM-Quartz_{pid_label}",       xlim, args.outdir,
+    #                              args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, suffix, args.pid)
+    #     make_mosaic_hist_overlay(files, PLASTIC_GRID, f"6MM-Plastic_{pid_label}",      xlim, args.outdir,
+    #                              args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, suffix, args.pid)
+    #     make_mosaic_hist_overlay(files, SCI_GRID,     f"6MM-Sci_{pid_label}",          xlim, args.outdir,
+    #                              args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, suffix, args.pid)
+        
+    
+    # --- Generate the 3 Paper-Worthy Gaussian Fits (List is passed directly) ---
+    for fam_name, config in fit_channels.items():
+        ch_code = config["ch"]
+        custom_xlim = config["xlim"]
+        
+        make_channel_overlay_with_modes(
+            files, ch_code, f"6MM-{fam_name}_{pid_label}", custom_xlim, args.outdir,
+            args.tree, NBINS, CUT_MIN, MIN_ENTRIES, MIN_RAW, suffixes, args.pid
+        )
+
+
+    
+    # --- Generate the 20-Page Waveform Grid PDFs (L50 only) ---
+    # for fam_name, config in fit_channels.items():
+    #     ch_code = config["ch"]
+    #     custom_xlim = config["xlim"] # Extract the limits for this specific channel
+        
+    #     make_waveform_pdf(
+    #         files, ch_code, f"6MM-{fam_name}_{pid_label}", custom_xlim, args.outdir, 
+    #         args.tree, args.pid,
+    #     )
+
+    #investigate_raw_timings(files, args.single_channel, args.outdir, args.tree, args.pid)
 
     print("All done.")
     print("All done.")
