@@ -13,7 +13,7 @@ from scipy.optimize import curve_fit
 # ================= DEFAULTS =================
 TREE_NAME = "EventTree"
 
-NBINS = 10
+NBINS = 100
 CUT_MIN = 1.0
 MIN_ENTRIES = 100
 MIN_RAW = 500
@@ -1192,12 +1192,12 @@ def main():
     ap.add_argument("--run-max", type=int, default=None, help="Keep only runs <= run-max")
 
     ap.add_argument("--tree", default=TREE_NAME, help="Tree name")
-    ap.add_argument("--outdir", default="./TRUE-HGtiming/calibration_studiesZ/6mmTiming_y1065centerofDream",
+    ap.add_argument("--outdir", default="./TRUE-HGtiming/calibration_studiesZ/6mmTiming_y1028",  
                     help="Output directory")
 
     # Updated default xlims for 6mm
-    ap.add_argument("--xmin", type=float, default=10.0, help="Min |tfinal|")
-    ap.add_argument("--xmax", type=float, default=20.0, help="Max |tfinal|")
+    ap.add_argument("--xmin", type=float, default=8.0, help="Min |tfinal|")
+    ap.add_argument("--xmax", type=float, default=13.0, help="Max |tfinal|")
     ap.add_argument("--nbins", type=int, default=NBINS, help="Histogram bins")
     ap.add_argument("--cut-min", type=float, default=CUT_MIN, help="Ignore |tfinal| < cut-min")
     ap.add_argument("--min-entries", type=int, default=MIN_ENTRIES, help="Min entries after cuts")
@@ -1239,22 +1239,35 @@ def main():
 
     # 1. Define the 3 representative channels
     # fit_channels = {
-    #     "SCI":         {"ch": "604 y: 936mm ", "xlim": (8.5, 11.0)},
-    #     "Plastic-CER": {"ch": "52 y: 936mm", "xlim": (11.0, 12.2)},
-    #     "Quartz-CER":  {"ch": "616 y: 936mm", "xlim": (11.0, 13.0)}
-    # }
+    #      "SCI":         {"ch": "604 y: 936mm ", "xlim": (8.0, 11.0)},
+    #      "Plastic-CER": {"ch": "606 y: 936mm", "xlim": (11.0, 12.5)},
+    #      "Quartz-CER":  {"ch": "615 y: 936mm", "xlim": (11.0, 12.6)}
+    #  }
 
     suffixes = ["_t_peak", "_LP2_50"]
     mosaic_xlim = (args.xmin, args.xmax)
 
     # Iterate through both timing definitions and generate the plot sets
-    suffixes = ["_t_peak", "_LP2_50"]
+    #suffixes = ["_t_peak", "_LP2_50"]
     
 
+    # fit_channels = {
+    #     #SCI":         {"ch": "105 y:1065mm ", "xlim": (8.5, 15.0)},
+    #     #"Plastic-CER": {"ch": "100 y:1065mm", "xlim": (10.0,15.0)},
+    #     "Quartz-CER":  {"ch": "523 y:1065mm", "xlim": (10.0, 13.5)}
+    # }
+
+
+    # fit_channels = {
+    #     "SCI":         {"ch": "620 y:1000mm ", "xlim": (7.0, 11.0)},
+    #     "Plastic-CER": {"ch": "612 y:1000mm", "xlim": (10.0,12.5)},
+    #     "Quartz-CER":  {"ch": "631 y:1000 mm", "xlim": (11.0, 12.5)}
+    # }
+
     fit_channels = {
-        #"SCI":         {"ch": "105 y:1065mm ", "xlim": (8.5, 15.0)},
-        #"Plastic-CER": {"ch": "100 y:1065mm", "xlim": (10.0,15.0)},
-        "Quartz-CER":  {"ch": "523 y:1065mm", "xlim": (10.5, 13.5)}
+        "SCI":         {"ch": "421 y:1028mm ", "xlim": (7.0, 10.5)},
+        "Plastic-CER": {"ch": "423 y:1028mm", "xlim": (10.5,12.5)},
+        "Quartz-CER":  {"ch": "411 y:1028 mm", "xlim": (11.0, 12.5)}
     }
     # for suffix in suffixes:
     #     make_mosaic_hist_overlay(files, QUARTZ_GRID,  f"6MM-Quartz_{pid_label}",       xlim, args.outdir,
