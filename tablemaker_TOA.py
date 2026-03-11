@@ -192,20 +192,17 @@ def _mode_from_hist(arr, bins):
 
 def gaussian(x, amp, mean, sigma):
     return amp * np.exp(-(x - mean)**2 / (2 * sigma**2))
+
 def style_paper_axes(ax, xlabel, ylabel, particle_type):
-    # Position labels at the ends of axes
     ax.set_xlabel(xlabel, loc='right', fontsize=14)
     ax.set_ylabel(ylabel, loc='top', fontsize=14)
     
-    # Tick formatting for HEP style
     ax.xaxis.set_minor_locator(AutoMinorLocator())
     ax.yaxis.set_minor_locator(AutoMinorLocator())
     ax.tick_params(which='both', direction='in', top=True, right=True, labelsize=12)
     ax.tick_params(which='major', length=8)
     ax.tick_params(which='minor', length=4)
     
-    # Combined single-line header above the plot
-    # "e+" is often used for Positrons in these plots
     display_name = "Positron" if particle_type.lower() == "electron" else particle_type.capitalize()
     header_text = r"$\mathbf{CaloX}$" + f"  40 GeV {display_name}"
     
@@ -213,47 +210,206 @@ def style_paper_axes(ax, xlabel, ylabel, particle_type):
             transform=ax.transAxes, fontsize=14, 
             va='bottom', ha='left', color='black')
 
-def create_z_toa_plot(plot_data, outdir, pid_label, particle_type):
+def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
+    outdir = os.path.dirname(txt_path)
     pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.pdf")
     
-    with PdfPages(pdf_path) as pdf:
-        fig, ax = plt.subplots(figsize=(8, 7))
+    # Open the existing stats table and append fit results
+    with open(txt_path, "a") as f_out:
+        f_out.write("\n" + "=" * 102 + "\n")
+        f_out.write(f"{'FAMILY':<20} | {'VELOCITY [m/s]':<20} | {'FIT EQUATION [t = m*z + c]'}\n")
+        f_out.write("=" * 102 + "\n")
         
-        style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
-        
-        for family_name, data in plot_data.items():
-            if not data["z"]: continue
+        with PdfPages(pdf_path) as pdf:
+            fig, ax = plt.subplots(figsize=(8, 7))
+            
+            style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
+            
+            for family_name, data in plot_data.items():
+                if not data["z"]: continue
+                    
+                z_arr = np.array(data["z"])
+                mu_arr = np.array(data["mu"])
+                sig_arr = np.array(data["sig"])
+                color = FAMILIES[family_name]["color"]
                 
-            z_arr = np.array(data["z"])
-            mu_arr = np.array(data["mu"])
-            sig_arr = np.array(data["sig"])
-            color = FAMILIES[family_name]["color"]
-            
-            # Linear Fit
-            weights = np.where(sig_arr > 0, 1.0 / sig_arr, 1.0) 
-            slope, intercept = np.polyfit(z_arr, mu_arr, 1, w=weights)
-            
-            speed_m_s = abs(1.0 / slope) * 1e6 if slope != 0 else 0
-            exponent = int(np.floor(np.log10(speed_m_s))) if speed_m_s > 0 else 0
-            mantissa = speed_m_s / (10**exponent) if speed_m_s > 0 else 0
-            
-            speed_legend = r"{} ($v \approx {:.2f} \times 10^{{{}}}$ m/s)".format(
-                FAMILIES[family_name]["legend"], mantissa, exponent
-            )
-            
-            z_fit = np.linspace(min(z_arr) - 20, max(z_arr) + 20, 100)
-            t_fit = slope * z_fit + intercept
-            
-            ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, capsize=3, markersize=4)
-            ax.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=speed_legend)
+                # Linear Fit
+                weights = np.where(sig_arr > 0, 1.0 / sig_arr, 1.0) 
+                slope, intercept = np.polyfit(z_arr, mu_arr, 1, w=weights)
+                
+                speed_m_s = abs(1.0 / slope) * 1e6 if slope != 0 else 0
+                exponent = int(np.floor(np.log10(speed_m_s))) if speed_m_s > 0 else 0
+                mantissa = speed_m_s / (10**exponent) if speed_m_s > 0 else 0
+                
+                # Format the fit equation
+                intercept_sign = "+" if intercept >= 0 else "-"
+                eq_str = f"t = {slope:.4f}z {intercept_sign} {abs(intercept):.2f}"
+                
+                # Write results out to text file
+                f_out.write(f"{family_name:<20} | {speed_m_s:<20.4e} | {eq_str}\n")
+                
+                # Construct Legend string with velocity and line equation
+                speed_legend = r"{} ($v \approx {:.2f} \times 10^{{{}}}$ m/s, {})".format(
+                    FAMILIES[family_name]["legend"], mantissa, exponent, eq_str
+                )
+                
+                z_fit = np.linspace(min(z_arr) - 20, max(z_arr) + 20, 100)
+                t_fit = slope * z_fit + intercept
+                
+                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, capsize=3, markersize=4)
+                ax.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=speed_legend)
 
-        # Move legend to top left, remove frame for a cleaner look
-        ax.legend(loc="upper left", frameon=False, fontsize=10)
+            ax.legend(loc="upper left", frameon=False, fontsize=10)
+            fig.subplots_adjust(top=0.92) 
+            pdf.savefig(fig)
+            plt.close(fig)
+def create_shared_intercept_plot(plot_data, txt_path, pid_label, particle_type):
+    outdir = os.path.dirname(txt_path)
+    pdf_path = os.path.join(outdir, f"Z_vs_TOA_SharedInterceptFits_{pid_label}.pdf")
+    
+    # Filter to only families that actually have data
+    active_families = [fam for fam, data in plot_data.items() if len(data["z"]) > 0]
+    if len(active_families) < 2:
+        print(" [INFO] Not enough families with data to perform a shared intercept fit.")
+        return
+
+    # Flatten the data for a simultaneous global fit
+    all_fam_idx, all_z, all_mu, all_sig = [], [], [], []
+    indiv_slopes, indiv_intercepts = [], []
+
+    for i, fam in enumerate(active_families):
+        z_arr = np.array(plot_data[fam]["z"])
+        mu_arr = np.array(plot_data[fam]["mu"])
+        sig_arr = np.array(plot_data[fam]["sig"])
         
-        # Adjust top margin to ensure the external header isn't cut off
-        fig.subplots_adjust(top=0.92) 
-        pdf.savefig(fig)
-        plt.close(fig)
+        all_fam_idx.extend([i] * len(z_arr))
+        all_z.extend(z_arr)
+        all_mu.extend(mu_arr)
+        all_sig.extend(sig_arr)
+        
+        # Estimate individual slopes/intercepts to give curve_fit a good starting guess
+        w = np.where(sig_arr > 0, 1.0 / sig_arr, 1.0)
+        if len(z_arr) > 1:
+            m, b = np.polyfit(z_arr, mu_arr, 1, w=w)
+            indiv_slopes.append(m)
+            indiv_intercepts.append(b)
+        else:
+            indiv_slopes.append(0.0)
+            indiv_intercepts.append(np.mean(mu_arr))
+
+    X_data = np.vstack((all_fam_idx, all_z))
+    Y_data = np.array(all_mu)
+    sig_data = np.array(all_sig)
+
+    has_sci = "SCI" in active_families
+
+    # Define the global objective function with selective intercept sharing
+    def global_fit(X, *params):
+        if has_sci:
+            b_shared = params[0]
+            b_sci = params[1]
+            m_arr = np.array(params[2:])
+        else:
+            b_shared = params[0]
+            b_sci = 0.0  # Not used
+            m_arr = np.array(params[1:])
+            
+        idx = X[0].astype(int)
+        z = X[1]
+        
+        y_calc = np.zeros_like(z)
+        for j in range(len(z)):
+            fam_idx = idx[j]
+            fam_name = active_families[fam_idx]
+            m = m_arr[fam_idx]
+            
+            # Scintillator gets its own intercept, Cherenkovs share one
+            b = b_sci if fam_name == "SCI" else b_shared
+            y_calc[j] = m * z[j] + b
+            
+        return y_calc
+
+    # Setup initial guesses
+    cherenkov_b_guesses = [indiv_intercepts[i] for i, f in enumerate(active_families) if f != "SCI"]
+    b_shared_guess = np.mean(cherenkov_b_guesses) if cherenkov_b_guesses else 0.0
+    
+    if has_sci:
+        sci_idx = active_families.index("SCI")
+        b_sci_guess = indiv_intercepts[sci_idx]
+        p0 = [b_shared_guess, b_sci_guess] + indiv_slopes
+    else:
+        p0 = [b_shared_guess] + indiv_slopes
+    
+    try:
+        popt, _ = curve_fit(global_fit, X_data, Y_data, p0=p0, sigma=sig_data, absolute_sigma=False)
+        if has_sci:
+            shared_b = popt[0]
+            sci_b = popt[1]
+            shared_slopes = popt[2:]
+        else:
+            shared_b = popt[0]
+            sci_b = 0.0
+            shared_slopes = popt[1:]
+    except Exception as e:
+        print(f" [ERROR] Shared global fit failed: {e}")
+        return
+
+    # Append to the existing text file
+    with open(txt_path, "a") as f_out:
+        f_out.write("\n" + "=" * 102 + "\n")
+        f_out.write(f"{'PARTIAL SHARED INTERCEPT FIT RESULTS (Cherenkov Shared, SCI Independent)':^102}\n")
+        f_out.write("=" * 102 + "\n")
+        f_out.write(f"Cherenkov Shared Intercept (b) = {shared_b:.4f} ns\n")
+        if has_sci:
+            f_out.write(f"Scintillator Independent Intercept = {sci_b:.4f} ns\n")
+        f_out.write("\n")
+        f_out.write(f"{'FAMILY':<20} | {'VELOCITY [m/s]':<15} | {'FIT EQUATION'}\n")
+        f_out.write("-" * 102 + "\n")
+
+        with PdfPages(pdf_path) as pdf:
+            fig, ax = plt.subplots(figsize=(8, 7))
+            style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
+
+            # Determine plot boundaries: start slightly before the earliest point, end at +400 mm
+            min_z_plot = min(all_z) - 20
+            max_z_plot = max(max(all_z) + 20, 400.0)
+
+            for i, fam in enumerate(active_families):
+                z_arr = np.array(plot_data[fam]["z"])
+                mu_arr = np.array(plot_data[fam]["mu"])
+                sig_arr = np.array(plot_data[fam]["sig"])
+                color = FAMILIES[fam]["color"]
+                
+                slope = shared_slopes[i]
+                speed_m_s = abs(1.0 / slope) * 1e6 if slope != 0 else 0
+                exponent = int(np.floor(np.log10(speed_m_s))) if speed_m_s > 0 else 0
+                mantissa = speed_m_s / (10**exponent) if speed_m_s > 0 else 0
+                
+                # Determine correct intercept for this specific family
+                intercept = sci_b if fam == "SCI" else shared_b
+                int_sign = "+" if intercept >= 0 else "-"
+                eq_str = f"t = {slope:.4f}z {int_sign} {abs(intercept):.2f}"
+
+                f_out.write(f"{fam:<20} | {speed_m_s:<15.4e} | {eq_str}\n")
+
+                speed_legend = f"{FAMILIES[fam]['legend']} ($v \\approx {mantissa:.2f} \\times 10^{{{exponent}}}$ m/s)\n{eq_str}"
+
+                # Use the new extended boundaries
+                z_fit = np.linspace(min_z_plot, max_z_plot, 200)
+                t_fit = slope * z_fit + intercept
+                
+                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, capsize=3, markersize=4)
+                ax.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=speed_legend)
+
+            # Update legend title to reflect the complex fit
+            legend_title = rf"$\mathbf{{Cherenkov\ Intercept:}}$ {shared_b:.2f} ns"
+            if has_sci:
+                legend_title += f"\n" + rf"$\mathbf{{SCI\ Intercept:}}$ {sci_b:.2f} ns"
+                
+            ax.legend(loc="upper left", frameon=False, fontsize=9, title=legend_title)
+            fig.subplots_adjust(top=0.92) 
+            pdf.savefig(fig)
+            plt.close(fig)
 # ================= MAIN DATA EXTRACTION =================
 def generate_stats_table(files, outpath, tree_name, particle_type=None):
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
@@ -372,7 +528,6 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
                         run_display, z_pos, family_name, code_str, fit_mu, fit_sig, fwhm, n_final
                     ) + "\n")
                     
-                    # Store data for plotting if Z position is valid
                     if z_pos != -999.0:
                         plot_data[family_name]["z"].append(z_pos)
                         plot_data[family_name]["mu"].append(fit_mu)
@@ -384,11 +539,12 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
         f_out.write(separator + "\n")
     print(f"\nTable successfully saved to: {outpath}")
     
-    # Generate the requested plots
+    # Generate the original plots (individual fits)
     pid_label = f"PID_{particle_type}" if particle_type else "AllParticles"
-    #create_z_toa_plot(plot_data, os.path.dirname(outpath), pid_label)
-    # Change this line at the bottom of generate_stats_table:
-    create_z_toa_plot(plot_data, os.path.dirname(outpath), pid_label, particle_type)
+    create_z_toa_plot(plot_data, outpath, pid_label, particle_type)
+    
+    # Generate the NEW separate PDF with the shared intercept fit
+    create_shared_intercept_plot(plot_data, outpath, pid_label, particle_type)
 
 def main():
     ap = argparse.ArgumentParser()

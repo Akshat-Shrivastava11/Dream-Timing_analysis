@@ -43,6 +43,7 @@ Y_CONFIGS = {
     }
 }
 
+
 RUN_MAP = {
     "run1502_250928113749": "y1000",
     "run1508_250928161049": "y1000",
@@ -167,8 +168,9 @@ FERS_SCI_GRID = [
     [None, None, "1354", "1353", None, None], 
 ]
 
-def exp_func(x, A, lam):
-    return A * np.exp(-x / lam)
+def exp_func(t, A, lam):
+    return A * np.exp(t / lam)
+    #return A * np.exp(-x / lam)
 
 def build_channel_map():
     drs_to_fers = {}
@@ -342,7 +344,7 @@ def run_y_config_correlations(files, outdir, emin, emax, nbins, particle_type):
             tmax = fam_cfg.get("tmax", 25.0)
             pid_tag = particle_type if particle_type else "NoPID"
             
-            pdf_path = os.path.join(fam_dir, f"{family}_CombinedChannels_PID_{pid_tag}.pdf")
+            pdf_path = os.path.join(fam_dir, f"{family}_CombinedChannels_PID_zoomedin{pid_tag}.pdf")
             print(f"  -> Extracting & Combining {len(channels)} Channels for {family}...")
             print(f"  -> Target PDF: {pdf_path}")
 
@@ -402,10 +404,64 @@ def run_y_config_correlations(files, outdir, emin, emax, nbins, particle_type):
                         print(f"     [ERROR] Failed processing {rl}: {e}")
 
                     # 1. Joint plot for this single Z-position run (All Channels Merged)
+                    # 1. Joint plot for this single Z-position run (All Channels Merged)
                     if len(run_t) > 10:
                         z_pos = get_z_position(rl)
                         title = f"{family} | Run: {rl} (Z = {z_pos} mm)\nAll Channels Combined (PID: {pid_tag})"
                         create_joint_plot(np.array(run_t), np.array(run_e), tmin, tmax, emin, emax, nbins, title, pdf)
+
+                        # =================================================================
+                        # ---> PASTE THIS NEW BLOCK: Individual Run Energy Profile Plot
+                        # =================================================================
+                        fig_run_prof, ax_run_prof = plt.subplots(figsize=(10, 8))
+                        n_run_profile_bins = 20
+                        run_energy_bins = np.linspace(emin, emax, n_run_profile_bins + 1)
+                        run_e_centers, run_t_medians, run_t_errs = [], [], []
+                        
+                        run_e_arr = np.array(run_e)
+                        run_t_arr = np.array(run_t)
+                        
+                        for i in range(len(run_energy_bins)-1):
+                            mask = (run_e_arr >= run_energy_bins[i]) & (run_e_arr < run_energy_bins[i+1])
+                            if np.sum(mask) >= 5: 
+                                t_subset = run_t_arr[mask]
+                                run_e_centers.append(0.5 * (run_energy_bins[i] + run_energy_bins[i+1]))
+                                run_t_medians.append(np.median(t_subset))
+                                run_t_errs.append(1.253 * (np.std(t_subset) / np.sqrt(len(t_subset))))
+                                
+                        run_e_centers = np.array(run_e_centers)
+                        run_t_medians = np.array(run_t_medians)
+                        run_t_errs = np.array(run_t_errs)
+                        
+                        if len(run_e_centers) > 0:
+                            ax_run_prof.errorbar(run_t_medians, run_e_centers, xerr=run_t_errs, fmt='o', color='black', label="Median ToA per Energy Bin", markersize=8, capsize=4, zorder=5)
+                            if len(run_e_centers) > 2:
+                                try:
+                                    # Robust initial guess using log transform
+                                    valid = run_e_centers > 0
+                                    p_log = np.polyfit(run_t_medians[valid], np.log(run_e_centers[valid]), 1)
+                                    lam_guess = 1.0 / p_log[0] if p_log[0] != 0 else 1.0
+                                    A_guess = np.exp(p_log[1])
+
+                                    # Fit E = A * exp(t/lam)
+                                    popt_run, _ = curve_fit(exp_func, run_t_medians, run_e_centers, p0=[A_guess, lam_guess], maxfev=10000)
+                                    A_opt_r, lam_opt_r = popt_run
+                                    
+                                    t_smooth_r = np.linspace(min(run_t_medians), max(run_t_medians), 500)
+                                    e_smooth_r = exp_func(t_smooth_r, A_opt_r, lam_opt_r)
+                                    ax_run_prof.plot(t_smooth_r, e_smooth_r, color='red', lw=2.5, label=f"Fit: $E = {A_opt_r:.2e} e^{{t / {lam_opt_r:.2f}}}$", zorder=4)
+                                except Exception: pass
+                            
+                            ax_run_prof.set_title(f"Profile (Energy Binned): {family} | Run: {rl} (Z = {z_pos} mm)", fontsize=14)
+                            ax_run_prof.set_xlabel(r"Median $|t_{\mathrm{final}}|$ [ns]", fontsize=12)
+                            ax_run_prof.set_ylabel("Energy [A.U.]", fontsize=12)
+                            ax_run_prof.set_xlim(tmin, tmax)
+                            ax_run_prof.set_ylim(emin, emax)
+                            ax_run_prof.grid(True, alpha=0.3)
+                            ax_run_prof.legend(fontsize=12, framealpha=1)
+                            pdf.savefig(fig_run_prof)
+                            plt.close(fig_run_prof)
+                        
 
                         all_t_family.extend(run_t)
                         all_e_family.extend(run_e)
@@ -418,6 +474,7 @@ def run_y_config_correlations(files, outdir, emin, emax, nbins, particle_type):
                     master_title = f"MASTER COMBINED {family} | {grp}\nAll Z-Pos & All Channels Combined (PID: {pid_tag})"
                     create_joint_plot(all_t_arr, all_e_arr, tmin, tmax, emin, emax, nbins, master_title, pdf)
 
+                    # Generate Master Profiles
                     # Generate Master Profiles
                     n_profile_bins = 20
                     
@@ -439,12 +496,19 @@ def run_y_config_correlations(files, outdir, emin, emax, nbins, particle_type):
                         ax2.errorbar(t_medians, e_centers, xerr=t_errs, fmt='o', color='black', label="Median ToA per Energy Bin", markersize=8, capsize=4, zorder=5)
                         if len(e_centers) > 2:
                             try:
-                                p0 = [np.max(t_medians), np.mean(e_centers) if np.mean(e_centers) != 0 else 1.0]
-                                popt, _ = curve_fit(exp_func, e_centers, t_medians, p0=p0, maxfev=10000)
+                                # Robust initial guess using log transform: ln(E) = ln(A) + (1/lam)*t
+                                valid = e_centers > 0
+                                p_log = np.polyfit(t_medians[valid], np.log(e_centers[valid]), 1)
+                                lam_guess = 1.0 / p_log[0] if p_log[0] != 0 else 1.0
+                                A_guess = np.exp(p_log[1])
+
+                                # Fit E = A * exp(t/lam)
+                                popt, _ = curve_fit(exp_func, t_medians, e_centers, p0=[A_guess, lam_guess], maxfev=10000)
                                 A_opt, lam_opt = popt
-                                e_smooth = np.linspace(min(e_centers), max(e_centers), 500)
-                                t_smooth = exp_func(e_smooth, A_opt, lam_opt)
-                                ax2.plot(t_smooth, e_smooth, color='red', lw=2.5, label=f"Fit: $t = {A_opt:.2e} e^{{-E / {lam_opt:.2f}}}$", zorder=4)
+                                
+                                t_smooth = np.linspace(min(t_medians), max(t_medians), 500)
+                                e_smooth = exp_func(t_smooth, A_opt, lam_opt)
+                                ax2.plot(t_smooth, e_smooth, color='red', lw=2.5, label=f"Fit: $E = {A_opt:.2e} e^{{t / {lam_opt:.2f}}}$", zorder=4)
                             except Exception: pass
                         
                         ax2.set_title(f"Master Profile (Energy Binned): {family} (All Channels)", fontsize=14)
@@ -475,12 +539,19 @@ def run_y_config_correlations(files, outdir, emin, emax, nbins, particle_type):
                         ax3.errorbar(t_centers, e_medians, yerr=e_errs, fmt='o', color='blue', label="Median Energy per Time Bin", markersize=8, capsize=4, zorder=5)
                         if len(t_centers) > 2:
                             try:
-                                p0 = [np.max(e_medians), np.mean(t_centers) if np.mean(t_centers) != 0 else 1.0]
-                                popt3, _ = curve_fit(exp_func, t_centers, e_medians, p0=p0, maxfev=10000)
+                                # Robust initial guess using log transform
+                                valid = e_medians > 0
+                                p_log = np.polyfit(t_centers[valid], np.log(e_medians[valid]), 1)
+                                lam_guess = 1.0 / p_log[0] if p_log[0] != 0 else 1.0
+                                A_guess = np.exp(p_log[1])
+
+                                # Fit E = A * exp(t/lam)
+                                popt3, _ = curve_fit(exp_func, t_centers, e_medians, p0=[A_guess, lam_guess], maxfev=10000)
                                 A_opt3, lam_opt3 = popt3
+                                
                                 t_smooth3 = np.linspace(min(t_centers), max(t_centers), 500)
                                 e_smooth3 = exp_func(t_smooth3, A_opt3, lam_opt3)
-                                ax3.plot(t_smooth3, e_smooth3, color='orange', lw=2.5, label=f"Fit: $E = {A_opt3:.2e} e^{{-t / {lam_opt3:.2f}}}$", zorder=4)
+                                ax3.plot(t_smooth3, e_smooth3, color='orange', lw=2.5, label=f"Fit: $E = {A_opt3:.2e} e^{{t / {lam_opt3:.2f}}}$", zorder=4)
                             except Exception: pass
                         
                         ax3.set_title(f"Master Profile (Time Binned): {family} (All Channels)", fontsize=14)
@@ -504,7 +575,7 @@ def main():
     parser.add_argument("--outdir", default="./Attenuation/6mmFERS_Correlations", help="Base output directory")
     parser.add_argument("--pid", default="electron", choices=["muon", "pion", "electron", "proton", "all"])
     parser.add_argument("--emin", type=float, default=0.0, help="Min Energy for Y-axis")
-    parser.add_argument("--emax", type=float, default=5000.0, help="Max Energy for Y-axis")
+    parser.add_argument("--emax", type=float, default=3000.0, help="Max Energy for Y-axis")
     parser.add_argument("--nbins", type=int, default=100)
     args = parser.parse_args()
 
