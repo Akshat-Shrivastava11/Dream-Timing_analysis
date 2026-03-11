@@ -35,8 +35,6 @@ Y_CONFIGS = {
         "Quartz-CER":  {"channels": ["631","630","627","637"], "tmin": 10.0, "tmax": 13.5}
     },
     "y1065": {
-        #"SCI":         {"channels": ["105"], "tmin": 8.5,  "tmax": 15.0},
-        #"Plastic-CER": {"channels": ["100"], "tmin": 10.0, "tmax": 15.0},
         "Quartz-CER":  {"channels": ["523","522","521","520"], "tmin": 10.0, "tmax": 13.5}
     },
     "y936": {
