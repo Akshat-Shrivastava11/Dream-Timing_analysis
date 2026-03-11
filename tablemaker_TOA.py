@@ -192,20 +192,17 @@ def _mode_from_hist(arr, bins):
 
 def gaussian(x, amp, mean, sigma):
     return amp * np.exp(-(x - mean)**2 / (2 * sigma**2))
+
 def style_paper_axes(ax, xlabel, ylabel, particle_type):
-    # Position labels at the ends of axes
     ax.set_xlabel(xlabel, loc='right', fontsize=14)
     ax.set_ylabel(ylabel, loc='top', fontsize=14)
     
-    # Tick formatting for HEP style
     ax.xaxis.set_minor_locator(AutoMinorLocator())
     ax.yaxis.set_minor_locator(AutoMinorLocator())
     ax.tick_params(which='both', direction='in', top=True, right=True, labelsize=12)
     ax.tick_params(which='major', length=8)
     ax.tick_params(which='minor', length=4)
     
-    # Combined single-line header above the plot
-    # "e+" is often used for Positrons in these plots
     display_name = "Positron" if particle_type.lower() == "electron" else particle_type.capitalize()
     header_text = r"$\mathbf{CaloX}$" + f"  40 GeV {display_name}"
     
@@ -213,47 +210,76 @@ def style_paper_axes(ax, xlabel, ylabel, particle_type):
             transform=ax.transAxes, fontsize=14, 
             va='bottom', ha='left', color='black')
 
-def create_z_toa_plot(plot_data, outdir, pid_label, particle_type):
+def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
+    outdir = os.path.dirname(txt_path)
     pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.pdf")
     
-    with PdfPages(pdf_path) as pdf:
-        fig, ax = plt.subplots(figsize=(8, 7))
+    # Open the existing stats table and append fit results
+    with open(txt_path, "a") as f_out:
+        f_out.write("\n" + "=" * 125 + "\n")
+        f_out.write(f"{'FAMILY':<20} | {'VELOCITY [m/s]':<15} | {'STANDARD FIT':<25} | {'FIT RELATIVE TO FIRST Z'}\n")
+        f_out.write("=" * 125 + "\n")
         
-        style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
-        
-        for family_name, data in plot_data.items():
-            if not data["z"]: continue
+        with PdfPages(pdf_path) as pdf:
+            fig, ax = plt.subplots(figsize=(8, 7))
+            
+            style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
+            
+            for family_name, data in plot_data.items():
+                if not data["z"]: continue
+                    
+                z_arr = np.array(data["z"])
+                mu_arr = np.array(data["mu"])
+                sig_arr = np.array(data["sig"])
+                color = FAMILIES[family_name]["color"]
                 
-            z_arr = np.array(data["z"])
-            mu_arr = np.array(data["mu"])
-            sig_arr = np.array(data["sig"])
-            color = FAMILIES[family_name]["color"]
-            
-            # Linear Fit
-            weights = np.where(sig_arr > 0, 1.0 / sig_arr, 1.0) 
-            slope, intercept = np.polyfit(z_arr, mu_arr, 1, w=weights)
-            
-            speed_m_s = abs(1.0 / slope) * 1e6 if slope != 0 else 0
-            exponent = int(np.floor(np.log10(speed_m_s))) if speed_m_s > 0 else 0
-            mantissa = speed_m_s / (10**exponent) if speed_m_s > 0 else 0
-            
-            speed_legend = r"{} ($v \approx {:.2f} \times 10^{{{}}}$ m/s)".format(
-                FAMILIES[family_name]["legend"], mantissa, exponent
-            )
-            
-            z_fit = np.linspace(min(z_arr) - 20, max(z_arr) + 20, 100)
-            t_fit = slope * z_fit + intercept
-            
-            ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, capsize=3, markersize=4)
-            ax.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=speed_legend)
+                # Sort arrays so the "first" point is the most upstream (smallest Z)
+                sort_idx = np.argsort(z_arr)
+                z_arr = z_arr[sort_idx]
+                mu_arr = mu_arr[sort_idx]
+                sig_arr = sig_arr[sort_idx]
+                
+                # Linear Fit
+                weights = np.where(sig_arr > 0, 1.0 / sig_arr, 1.0) 
+                slope, intercept = np.polyfit(z_arr, mu_arr, 1, w=weights)
+                
+                speed_m_s = abs(1.0 / slope) * 1e6 if slope != 0 else 0
+                exponent = int(np.floor(np.log10(speed_m_s))) if speed_m_s > 0 else 0
+                mantissa = speed_m_s / (10**exponent) if speed_m_s > 0 else 0
+                
+                # 1. Standard Fit Equation (intercept at Z=0)
+                int_sign = "+" if intercept >= 0 else "-"
+                eq_std = f"t = {slope:.4f}z {int_sign} {abs(intercept):.2f}"
+                
+                # 2. Fit Equation relative to the first Z point
+                z_first = z_arr[0]
+                t_first = slope * z_first + intercept
+                
+                z_op = "+" if z_first < 0 else "-"
+                t_op = "+" if t_first >= 0 else "-"
+                eq_first = f"t = {slope:.4f}(z {z_op} {abs(z_first):.1f}) {t_op} {abs(t_first):.2f}"
+                
+                # Write both results out to text file
+                f_out.write(f"{family_name:<20} | {speed_m_s:<15.4e} | {eq_std:<25} | {eq_first}\n")
+                
+                # Construct Legend string with velocity and BOTH line equations
+                speed_legend = (
+                    f"{FAMILIES[family_name]['legend']} ($v \\approx {mantissa:.2f} \\times 10^{{{exponent}}}$ m/s)\n"
+                    f"Abs: {eq_std}   |   Rel: {eq_first}"
+                )
+                
+                z_fit = np.linspace(min(z_arr) - 20, max(z_arr) + 20, 100)
+                t_fit = slope * z_fit + intercept
+                
+                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, capsize=3, markersize=4)
+                ax.plot(z_fit, t_fit, '-', color=color, linewidth=2, label=speed_legend)
 
-        # Move legend to top left, remove frame for a cleaner look
-        ax.legend(loc="upper left", frameon=False, fontsize=10)
-        
-        # Adjust top margin to ensure the external header isn't cut off
-        fig.subplots_adjust(top=0.92) 
-        pdf.savefig(fig)
-        plt.close(fig)
+            # Keep font size manageable since we added an extra line per label
+            ax.legend(loc="upper left", frameon=False, fontsize=9)
+            fig.subplots_adjust(top=0.92) 
+            pdf.savefig(fig)
+            plt.close(fig)
+
 # ================= MAIN DATA EXTRACTION =================
 def generate_stats_table(files, outpath, tree_name, particle_type=None):
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
@@ -372,7 +398,6 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
                         run_display, z_pos, family_name, code_str, fit_mu, fit_sig, fwhm, n_final
                     ) + "\n")
                     
-                    # Store data for plotting if Z position is valid
                     if z_pos != -999.0:
                         plot_data[family_name]["z"].append(z_pos)
                         plot_data[family_name]["mu"].append(fit_mu)
@@ -384,11 +409,11 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
         f_out.write(separator + "\n")
     print(f"\nTable successfully saved to: {outpath}")
     
-    # Generate the requested plots
     pid_label = f"PID_{particle_type}" if particle_type else "AllParticles"
-    #create_z_toa_plot(plot_data, os.path.dirname(outpath), pid_label)
-    # Change this line at the bottom of generate_stats_table:
-    create_z_toa_plot(plot_data, os.path.dirname(outpath), pid_label, particle_type)
+    
+    # Notice we pass outpath here directly so it appends the velocity/fits info 
+    # to the main statistics file generated directly above.
+    create_z_toa_plot(plot_data, outpath, pid_label, particle_type)
 
 def main():
     ap = argparse.ArgumentParser()
