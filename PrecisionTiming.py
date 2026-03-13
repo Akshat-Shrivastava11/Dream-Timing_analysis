@@ -11,7 +11,10 @@ from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import AutoMinorLocator
+import mplhep as hep
 
+# Apply the CMS style globally
+plt.style.use(hep.style.CMS)
 # ================= GRIDS & CHANNELS =================
 QUARTZ_GRID = [
     [None,  "002", None,  None],
@@ -90,6 +93,24 @@ FAMILIES = {
     "SCI":     {"channels": ["105", "107","111","117"], "tmin": -13.5, "tmax":  -9.5, "legend": "Scintillating",     "color": "green"}
 }
 
+#all channels
+# FAMILIES = {
+#     "Plastic": {
+#         "channels": extract_channels(PLASTIC_GRID), 
+#         "tmin": -14.5, "tmax": -11.5, 
+#         "legend": "Cherenkov-Plastic", "color": "red"
+#     },
+#     "Quartz":  {
+#         "channels": extract_channels(QUARTZ_GRID),  
+#         "tmin": -15.0, "tmax": -11.5, 
+#         "legend": "Cherenkov-Quartz",  "color": "blue"
+#     },
+#     "SCI":     {
+#         "channels": extract_channels(SCI_ALL_GRID), 
+#         "tmin": -13.5, "tmax":  -9.5, 
+#         "legend": "Scintillating",     "color": "green"
+#     }
+# }
 PID_BRANCH_MAP = {
     "PSD": "DRS_Board7_Group1_Channel1",
     "HoleVeto": "DRS_Board7_Group1_Channel6",
@@ -376,7 +397,7 @@ def make_channel_overlay_with_modes(files, code_str, label, xlim, outdir,
             timing_label = "LP2_{50}" if "LP2" in safe_suffix else "t_{peak}"
             fam_name = label.split('_')[0].replace("6MM-", "").replace("3MM-", "")
             
-            header_text = r"$\mathbf{CaloX}$" + f"  40 GeV {display_name} | ${timing_label}$ | {fam_name} | {code_str}"
+            header_text = r"$\LARGE $\mathbf{CaloX}$ $\mathit{Data}$" + f"  40 GeV{display_name} | ${timing_label}$ | {fam_name} | {code_str}"
             ax.text(0.0, 1.02, header_text, transform=ax.transAxes, fontsize=12, va='bottom', ha='left')
 
             ax.minorticks_on()
@@ -418,7 +439,7 @@ def make_family_overlay(files, fam_name, channels, xlim, outdir, tree_name, suff
     safe_suffix = suffix.strip("_")
     out = os.path.join(outdir, f"FIT_FAMILY_OVERLAY_{fam_name}_{tag}.pdf")
 
-    nbins = 200
+    nbins = 50
     cmap = plt.get_cmap("tab10")
     color_map = {ch: cmap(i % 10) for i, ch in enumerate(channels)}
 
@@ -442,18 +463,15 @@ def make_family_overlay(files, fam_name, channels, xlim, outdir, tree_name, suff
             ax.set_xlim(*xlim)
             ax.set_ylim(0, 1.4)
             
-            ax.set_xlabel("Time of Arrival [ns]", fontsize=14, loc='right')
-            ax.set_ylabel("Normalized Events", fontsize=14, loc='top')
+            ax.set_xlabel("Time of Arrival [ns]")
+            ax.set_ylabel("Normalized Events")
             
             display_name = "Positron" if particle_type and particle_type.lower() == "electron" else (particle_type.capitalize() if particle_type else "All")
             timing_label = "LP2_{50}" if "LP2" in safe_suffix else "t_{peak}"
             
-            header_text = r"$\mathbf{CaloX}$" + f"  40 GeV {display_name} | ${timing_label}$ | Family: {fam_name} | {rl}"
-            ax.text(0.0, 1.02, header_text, transform=ax.transAxes, fontsize=12, va='bottom', ha='left')
-            
-            ax.minorticks_on()
-            ax.tick_params(axis='both', which='major', labelsize=12, length=6, direction='in', top=True, right=True)
-            ax.tick_params(axis='both', which='minor', length=3, direction='in', top=True, right=True)
+            # --- USE MPLHEP FOR THE HEADER ---
+            right_label = f"40 GeV {display_name} | ${timing_label}$ | Family: {fam_name} | {rl}"
+            hep.cms.label(ax=ax, exp="CaloX", data=True, rlabel=right_label)
 
             handles, labels_list = [], []
 
@@ -528,7 +546,7 @@ def make_family_overlay(files, fam_name, channels, xlim, outdir, tree_name, suff
                     print(f"        [FIT FAIL] Ch {ch_str}: Using raw stats. Mu={fit_mu:.2f}, Sig={fit_sig:.2f}")
 
             if handles:
-                ax.legend(handles, labels_list, fontsize=9, ncol=1, frameon=False, loc="upper right")
+                ax.legend(handles, labels_list, fontsize=12, ncol=1, frameon=False, loc="upper right")
                 
             fig.tight_layout()
             pdf.savefig(fig)
@@ -589,71 +607,271 @@ def _resolve_files(args):
     return sorted(files, key=_sort_key)
 
 # ================= VELOCITY & STATS PLOTTING =================
+# def style_paper_axes(ax, xlabel, ylabel, particle_type):
+#     ax.set_xlabel(xlabel, loc='right', fontsize=14, fontweight='bold')
+#     ax.set_ylabel(ylabel, loc='top', fontsize=14, fontweight='bold')
+    
+#     ax.xaxis.set_minor_locator(AutoMinorLocator())
+#     ax.yaxis.set_minor_locator(AutoMinorLocator())
+#     ax.tick_params(which='both', direction='in', top=True, right=True, labelsize=12)
+#     ax.tick_params(which='major', length=8)
+#     ax.tick_params(which='minor', length=4)
+    
+#     display_name = "Positron" if particle_type.lower() == "electron" else particle_type.capitalize()
+    
+#     # Wrapped the trailing text in \\mathbf{{ }} and used \\ to preserve spaces
+#     header_text = r"$\mathbf{CaloX}$ $\mathit{Data}$" + f"  $\\mathbf{{40\ GeV\ {display_name}}}$"
+    
+#     ax.text(0.0, 1.02, header_text, transform=ax.transAxes, fontsize=16, va='bottom', ha='left', color='black')
+
+
 def style_paper_axes(ax, xlabel, ylabel, particle_type):
-    ax.set_xlabel(xlabel, loc='right', fontsize=14)
-    ax.set_ylabel(ylabel, loc='top', fontsize=14)
-    ax.xaxis.set_minor_locator(AutoMinorLocator())
-    ax.yaxis.set_minor_locator(AutoMinorLocator())
-    ax.tick_params(which='both', direction='in', top=True, right=True, labelsize=12)
-    ax.tick_params(which='major', length=8)
-    ax.tick_params(which='minor', length=4)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     
     display_name = "Positron" if particle_type.lower() == "electron" else particle_type.capitalize()
-    ax.text(0.0, 1.02, r"$\mathbf{CaloX}$" + f"  40 GeV {display_name}", 
-            transform=ax.transAxes, fontsize=14, va='bottom', ha='left', color='black')
+    
+    # --- USE MPLHEP FOR THE HEADER ---
+    right_label = f"40 GeV {display_name}"
+    
+    # Adding llabel="Data" ensures it prints "CaloX Data"
+    hep.cms.label(ax=ax, exp="CaloX", llabel="Data", data=True, rlabel=right_label)
+# def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
+#     outdir = os.path.dirname(txt_path)
+#     pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.pdf")
+    
+#     with open(txt_path, "a") as f_out:
+#         f_out.write("\n" + "=" * 102 + "\n")
+#         f_out.write(f"{'FAMILY':<20} | {'VELOCITY [m/s]':<20} | {'FIT EQUATION [t = m*z + c]'}\n")
+#         f_out.write("=" * 102 + "\n")
+        
+#         with PdfPages(pdf_path) as pdf:
+#             fig, ax = plt.subplots(figsize=(8, 7))
+#             style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
+            
+#             for fam, data in plot_data.items():
+#                 if not data["z"]: continue
+#                 z_arr, mu_arr, sig_arr = np.array(data["z"]), np.array(data["mu"]), np.array(data["sig"])
+#                 color = FAMILIES[fam]["color"]
+                
+#                 weights = np.where(sig_arr > 0, 1.0 / sig_arr, 1.0) 
+#                 slope, intercept = np.polyfit(z_arr, mu_arr, 1, w=weights)
+                
+#                 speed_m_s = abs(1.0 / slope) * 1e6 if slope != 0 else 0
+#                 exponent = int(np.floor(np.log10(speed_m_s))) if speed_m_s > 0 else 0
+#                 mantissa = speed_m_s / (10**exponent) if speed_m_s > 0 else 0
+                
+#                 eq_str = f"t = {slope:.4f}z {'+' if intercept >= 0 else '-'} {abs(intercept):.2f}"
+#                 f_out.write(f"{fam:<20} | {speed_m_s:<20.4e} | {eq_str}\n")
+                
+#                 speed_legend = f"{FAMILIES[fam]['legend']} ($v \\approx {mantissa:.2f} \\times 10^{{{exponent}}}$ m/s, {eq_str})"
+                
+#                 z_fit = np.linspace(min(z_arr) - 20, max(z_arr) + 20, 100)
+#                 ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, capsize=3, markersize=4)
+#                 ax.plot(z_fit, slope * z_fit + intercept, '-', color=color, linewidth=2, label=speed_legend)
 
+#             ax.legend(loc="upper left", frameon=False, fontsize=10)
+#             fig.subplots_adjust(top=0.92) 
+#             pdf.savefig(fig)
+#             plt.close(fig)
+#             print(f"\n[VELOCITY] Saved Z vs TOA plot to {pdf_path}")
+
+# ================= UPDATED VELOCITY PLOT WITH ERROR ON MEAN =================
+# ================= UPDATED VELOCITY PLOT WITH FIT ERRORS & 10^8 =================
 def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
     outdir = os.path.dirname(txt_path)
     pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.pdf")
     
+    print("\n[VELOCITY] --------------------------------------------------------")
+    print(f"[VELOCITY] Calculating Independent Velocity Fits (PID: {pid_label})")
+    
     with open(txt_path, "a") as f_out:
-        f_out.write("\n" + "=" * 102 + "\n")
-        f_out.write(f"{'FAMILY':<20} | {'VELOCITY [m/s]':<20} | {'FIT EQUATION [t = m*z + c]'}\n")
-        f_out.write("=" * 102 + "\n")
+        f_out.write("\n" + "=" * 115 + "\n")
+        f_out.write(f"{'FAMILY':<10} | {'VELOCITY [m/s]':<15} | {'V_ERROR [m/s]':<15} | {'FIT EQUATION'}\n")
+        f_out.write("=" * 115 + "\n")
         
         with PdfPages(pdf_path) as pdf:
-            fig, ax = plt.subplots(figsize=(8, 7))
+            # INCREASED SIZE HERE
+            fig, ax = plt.subplots(figsize=(14, 10))
             style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
             
             for fam, data in plot_data.items():
                 if not data["z"]: continue
-                z_arr, mu_arr, sig_arr = np.array(data["z"]), np.array(data["mu"]), np.array(data["sig"])
+                z_arr, mu_arr, sig_mean_arr = np.array(data["z"]), np.array(data["mu"]), np.array(data["sig"])
                 color = FAMILIES[fam]["color"]
                 
-                weights = np.where(sig_arr > 0, 1.0 / sig_arr, 1.0) 
-                slope, intercept = np.polyfit(z_arr, mu_arr, 1, w=weights)
+                weights = 1.0 / sig_mean_arr
+                params, cov = np.polyfit(z_arr, mu_arr, 1, w=weights, cov=True)
+                slope, intercept = params[0], params[1]
+                slope_err = np.sqrt(cov[0,0])
+                intercept_err = np.sqrt(cov[1,1])
                 
                 speed_m_s = abs(1.0 / slope) * 1e6 if slope != 0 else 0
-                exponent = int(np.floor(np.log10(speed_m_s))) if speed_m_s > 0 else 0
-                mantissa = speed_m_s / (10**exponent) if speed_m_s > 0 else 0
+                speed_err = (speed_m_s**2) * (slope_err * 1e-6) if slope != 0 else 0
                 
-                eq_str = f"t = {slope:.4f}z {'+' if intercept >= 0 else '-'} {abs(intercept):.2f}"
-                f_out.write(f"{fam:<20} | {speed_m_s:<20.4e} | {eq_str}\n")
+                v8 = speed_m_s / 1e8
+                v8_err = speed_err / 1e8
+                v_str = f"{v8:.4f}e8"
+                v_err_str = f"{v8_err:.4f}e8"
                 
-                speed_legend = f"{FAMILIES[fam]['legend']} ($v \\approx {mantissa:.2f} \\times 10^{{{exponent}}}$ m/s, {eq_str})"
+                eq_str = f"t = ({slope:.4f} +/- {slope_err:.4f})z {'+' if intercept >= 0 else '-'} ({abs(intercept):.2f} +/- {intercept_err:.2f})"
                 
-                z_fit = np.linspace(min(z_arr) - 20, max(z_arr) + 20, 100)
-                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=color, capsize=3, markersize=4)
-                ax.plot(z_fit, slope * z_fit + intercept, '-', color=color, linewidth=2, label=speed_legend)
+                f_out.write(f"{fam:<10} | {v_str:<15} | {v_err_str:<15} | {eq_str}\n")
+                legend_label = f"{fam:<10} | {v_str:<15} | {v_err_str:<15} | {eq_str}"
+                
+                z_fit = np.linspace(min(z_arr) - 20, 400, 200)
+                ax.errorbar(z_arr, mu_arr, yerr=sig_mean_arr, fmt='o', color=color, capsize=3, markersize=4)
+                ax.plot(z_fit, slope * z_fit + intercept, '-', color=color, linewidth=2, label=legend_label)
 
-            ax.legend(loc="upper left", frameon=False, fontsize=10)
-            fig.subplots_adjust(top=0.92) 
+            legend_title = f"{'FAMILY':<10} | {'VELOCITY [m/s]':<15} | {'V_ERROR [m/s]':<15} | {'FIT EQUATION'}"
+            
+            # MOVED LEGEND INSIDE TO THE BOTTOM LEFT
+            leg = ax.legend(
+                loc="upper right", 
+                frameon=True, 
+                prop={'family': 'monospace', 'size': 9}, 
+                title=legend_title
+            )
+            plt.setp(leg.get_title(), family='monospace', fontsize=9, weight='bold')
+
+            fig.tight_layout() # Use tight_layout instead of manual subplots_adjust
             pdf.savefig(fig)
             plt.close(fig)
-            print(f"\n[VELOCITY] Saved Z vs TOA plot to {pdf_path}")
+            print(f"[VELOCITY] Saved Independent Z vs TOA plot to: {pdf_path}")
 
+# ================= UPDATED SHARED INTERCEPT PLOT WITH RICH PRINTS =================
+# ================= UPDATED SHARED INTERCEPT PLOT WITH FIT ERRORS & 10^8 =================
+def create_shared_intercept_plot(plot_data, txt_path, pid_label, particle_type):
+    outdir = os.path.dirname(txt_path)
+    pdf_path = os.path.join(outdir, f"Z_vs_TOA_SharedInterceptFits_{pid_label}.pdf")
+    
+    print("\n[SHARED FIT] ------------------------------------------------------")
+    print(f"[SHARED FIT] Calculating Global Shared Intercept Fit (PID: {pid_label})")
+    
+    active_families = [fam for fam, data in plot_data.items() if len(data["z"]) > 0]
+    if len(active_families) < 2: 
+        print("  [WARN] Not enough families with data to perform a shared intercept fit.")
+        return
+
+    all_fam_idx, all_z, all_mu, all_sig = [], [], [], []
+    indiv_slopes, indiv_intercepts = [], []
+
+    for i, fam in enumerate(active_families):
+        z_arr, mu_arr, sig_arr = np.array(plot_data[fam]["z"]), np.array(plot_data[fam]["mu"]), np.array(plot_data[fam]["sig"])
+        all_fam_idx.extend([i] * len(z_arr))
+        all_z.extend(z_arr)
+        all_mu.extend(mu_arr)
+        all_sig.extend(sig_arr)
+        
+        m, b = np.polyfit(z_arr, mu_arr, 1, w=1.0/sig_arr)
+        indiv_slopes.append(m); indiv_intercepts.append(b)
+
+    X_data, Y_data, sig_data = np.vstack((all_fam_idx, all_z)), np.array(all_mu), np.array(all_sig)
+    has_sci = "SCI" in active_families
+
+    def global_fit(X, *params):
+        idx, z = X[0].astype(int), X[1]
+        b_shared, b_sci = (params[0], params[1]) if has_sci else (params[0], 0.0)
+        m_arr = np.array(params[2:]) if has_sci else np.array(params[1:])
+        
+        y_calc = np.zeros_like(z)
+        for j in range(len(z)):
+            fam_name = active_families[idx[j]]
+            y_calc[j] = m_arr[idx[j]] * z[j] + (b_sci if fam_name == "SCI" else b_shared)
+        return y_calc
+
+    cher_b_guess = np.mean([indiv_intercepts[i] for i, f in enumerate(active_families) if f != "SCI"])
+    p0 = [cher_b_guess, indiv_intercepts[active_families.index("SCI")]] + indiv_slopes if has_sci else [cher_b_guess] + indiv_slopes
+    
+    print("  -> Running simultaneous global curve fit across all families...")
+    try:
+        popt, pcov = curve_fit(global_fit, X_data, Y_data, p0=p0, sigma=sig_data, absolute_sigma=True)
+        shared_b = popt[0]
+        shared_b_err = np.sqrt(pcov[0,0])
+        
+        if has_sci:
+            sci_b = popt[1]
+            sci_b_err = np.sqrt(pcov[1,1])
+            fit_slopes = popt[2:]
+            fit_slope_errs = np.sqrt(np.diag(pcov))[2:]
+        else:
+            sci_b, sci_b_err = None, None
+            fit_slopes = popt[1:]
+            fit_slope_errs = np.sqrt(np.diag(pcov))[1:]
+            
+        print(f"  [RESULT] Shared Cherenkov Intercept: {shared_b:.3f} +/- {shared_b_err:.3f} ns")
+        if has_sci: print(f"  [RESULT] Independent SCI Intercept:  {sci_b:.3f} +/- {sci_b_err:.3f} ns")
+        
+    except Exception as e: 
+        print(f"  [ERROR] Shared fit failed: {e}")
+        return
+
+    with open(txt_path, "a") as f_out:
+        f_out.write("\n" + "=" * 115 + "\n")
+        f_out.write(f"{'GLOBAL SHARED INTERCEPT FIT (Cherenkovs Combined)':^115}\n")
+        f_out.write("=" * 115 + "\n")
+        
+        with PdfPages(pdf_path) as pdf:
+            # INCREASED SIZE HERE
+            fig, ax = plt.subplots(figsize=(14, 10))
+            style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
+
+            for i, fam in enumerate(active_families):
+                z_arr, mu_arr, sig_arr = np.array(plot_data[fam]["z"]), np.array(plot_data[fam]["mu"]), np.array(plot_data[fam]["sig"])
+                m, m_err = fit_slopes[i], fit_slope_errs[i]
+                b = sci_b if fam == "SCI" else shared_b
+                b_err = sci_b_err if fam == "SCI" else shared_b_err
+                
+                v = abs(1.0 / m) * 1e6
+                v_err = (v**2) * (m_err * 1e-6)
+                
+                v8 = v / 1e8
+                v8_err = v_err / 1e8
+                v_str = f"{v8:.4f}e8"
+                v_err_str = f"{v8_err:.4f}e8"
+                
+                eq_str = f"t = ({m:.4f} +/- {m_err:.4f})z {'+' if b >= 0 else '-'} ({abs(b):.2f} +/- {b_err:.2f})"
+                f_out.write(f"{fam:<10} | {v_str:<15} | {v_err_str:<15} | {eq_str}\n")
+
+                legend_label = f"{fam:<10} | {v_str:<15} | {v_err_str:<15} | {eq_str}"
+
+                z_fit = np.linspace(min(all_z) - 20, max(all_z) + 20, 200)
+                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=FAMILIES[fam]["color"], capsize=3, markersize=4)
+                ax.plot(z_fit, m * z_fit + b, '-', color=FAMILIES[fam]["color"], lw=2, label=legend_label)
+
+            legend_title = (
+                f"SHARED INTERCEPTS: Cherenkov=({shared_b:.2f} +/- {shared_b_err:.2f}) ns" + 
+                (f", SCI=({sci_b:.2f} +/- {sci_b_err:.2f}) ns\n" if has_sci else "\n") +
+                f"{'FAMILY':<10} | {'VELOCITY [m/s]':<15} | {'V_ERROR [m/s]':<15} | {'FIT EQUATION'}"
+            )
+            
+            # MOVED LEGEND INSIDE TO THE BOTTOM LEFT
+            leg = ax.legend(
+                loc="upper right", 
+                frameon=True, 
+                prop={'family': 'monospace', 'size': 9}, 
+                title=legend_title
+            )
+            plt.setp(leg.get_title(), family='monospace', fontsize=9, weight='bold')
+            
+            fig.tight_layout() # Use tight_layout instead of manual subplots_adjust
+            pdf.savefig(fig)
+            plt.close(fig)
+            print(f"[SHARED FIT] Saved Shared Intercept plot to: {pdf_path}")
+
+# ================= UPDATED STATS TABLE WITH TIME_ERROR =================
 def generate_stats_table(files, outpath, tree_name, particle_type=None):
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
-    header_fmt = "{:<10} | {:<10} | {:<10} | {:<8} | {:<12} | {:<12} | {:<12} | {:<10}"
-    row_fmt    = "{:<10} | {:<10.1f} | {:<10} | {:<8} | {:<12.4f} | {:<12.4f} | {:<12.4f} | {:<10}"
+    # Added Time_Err column to the format
+    header_fmt = "{:<10} | {:<10} | {:<10} | {:<8} | {:<12} | {:<12} | {:<12} | {:<12} | {:<10}"
+    row_fmt    = "{:<10} | {:<10.1f} | {:<10} | {:<8} | {:<12.4f} | {:<12.4f} | {:<12.4f} | {:<12.4f} | {:<10}"
+    
     plot_data = {fam: {"z": [], "mu": [], "sig": []} for fam in FAMILIES.keys()}
     
-    print("\n[STATS] Generating Statistics Table & Velocity Data...")
-    
     with open(outpath, "w") as f_out:
-        f_out.write("=" * 102 + "\n")
-        f_out.write(header_fmt.format("Run", "Position_Z", "Family", "Channel", "Time_Mean", "Time_Sigma", "FWHM", "N_Events") + "\n")
-        f_out.write("=" * 102 + "\n")
+        f_out.write("=" * 120 + "\n")
+        f_out.write(header_fmt.format("Run", "Position_Z", "Family", "Channel", "Time_Mean", "Time_Sigma", "Time_Err", "FWHM", "N_Events") + "\n")
+        f_out.write("=" * 120 + "\n")
         
         for fpath in files:
             rl = _run_label(fpath)
@@ -676,46 +894,51 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
                         adc_mask = compute_adc_mask(tree, code_str)
                         combined_mask = pid_mask & adc_mask if pid_mask is not None else adc_mask
                         
-                        if arr_raw.shape[0] == combined_mask.shape[0]:
-                            arr_adc = arr_raw[combined_mask]
-                            n_adc = len(arr_adc)
-                        else: continue
-                            
+                        arr_adc = arr_raw[combined_mask]
                         arr_time = arr_adc[~np.isnan(arr_adc)]
                         arr_time = arr_time[(arr_time >= xlim[0]) & (arr_time <= xlim[1])]
                         n_final = len(arr_time)
                     except Exception: continue
 
                     if n_final < 25: continue
-                        
+                    
+                    # Fitting logic...
                     bins = np.linspace(xlim[0], xlim[1], 200 + 1)
                     centers = 0.5 * (bins[1:] + bins[:-1])
-                    mode, max_counts, h = _mode_from_hist(arr_time, bins)
-                    if h.sum() == 0: continue
-
+                    mode, _, h = _mode_from_hist(arr_time, bins)
                     h = h / h.max() if h.max() > 0 else h
                     
                     try:
                         p0 = [mode, arr_time.std()]
-                        bounds = ([xlim[0] - 2.0, 0.001], [xlim[1] + 2.0, 10.0])
-                        popt, _ = curve_fit(gaussian_peak_1, centers, h, p0=p0, bounds=bounds)
+                        popt, _ = curve_fit(gaussian_peak_1, centers, h, p0=p0)
                         fit_mu, fit_sig = popt[0], abs(popt[1])
-                    except: fit_mu, fit_sig = mode, float(arr_time.std())
+                    except: 
+                        fit_mu, fit_sig = mode, float(arr_time.std())
+
+                    # Statistical precision calculation
+                    time_err = fit_sig / np.sqrt(n_final)
 
                     run_display = re.search(r"run(\d+)", rl).group(1) if re.search(r"run(\d+)", rl) else rl
-                    f_out.write(row_fmt.format(run_display, z_pos, family_name, code_str, fit_mu, fit_sig, 2.355 * fit_sig, n_final) + "\n")
+                    f_out.write(row_fmt.format(
+                        run_display, z_pos, family_name, code_str, 
+                        fit_mu, fit_sig, time_err, 2.355 * fit_sig, n_final
+                    ) + "\n")
                     
                     if z_pos != -999.0:
                         plot_data[family_name]["z"].append(z_pos)
                         plot_data[family_name]["mu"].append(fit_mu)
-                        plot_data[family_name]["sig"].append(fit_sig)
+                        plot_data[family_name]["sig"].append(time_err) # Use SE for the plot weights
             uf.close()
-            f_out.write("-" * 102 + "\n")
-        f_out.write("=" * 102 + "\n")
-    print(f"[STATS] Table saved to: {outpath}")
     
     pid_label = f"PID_{particle_type}" if particle_type else "AllParticles"
     create_z_toa_plot(plot_data, outpath, pid_label, particle_type)
+    # 2. Shared Intercept plot (Combined Cherenkov fit)
+    create_shared_intercept_plot(plot_data, outpath, pid_label, particle_type)
+    
+    print("All done.")
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ana-files", nargs="+", default=None, help="Explicit list of input ROOT files.")
@@ -739,7 +962,7 @@ def main():
     print(f"[INIT] PID selection active: {args.pid}")
     
     # Run the Overlay Plots
-    process_all_channels(files, args.outdir, args.tree, args.pid)
+    #process_all_channels(files, args.outdir, args.tree, args.pid)
     
     # Run the Stats Table and Velocity Plots
     pid_label = f"PID_{args.pid}" if args.pid else "AllParticles"
