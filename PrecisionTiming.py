@@ -206,27 +206,31 @@ def get_tfinal_3mm(tree, b, g, c, suffix):
     Computes the raw t_final for the 3mm/6mm setup on the fly:
     t_final(b,g,c) = ( t(b,g,c) - t(b,g,8) ) - ( t(b,3,7) - t(b,3,8) )
     """
+    """
+    NEW STRATEGY: Average of two MCP Triggers (Assumed Channel 6 and Channel 7)
+    """
     br_sig     = f"DRS_Board{b}_Group{g}_Channel{c}{suffix}"
     br_sig_ref = f"DRS_Board{b}_Group{g}_Channel8{suffix}"
-    br_trg     = f"DRS_Board0_Group3_Channel7{suffix}"
+    
+    # EDIT THESE TWO CHANNELS IF YOUR SECOND MCP IS NOT CHANNEL 6
+    br_mcp1    = f"DRS_Board0_Group3_Channel6{suffix}" 
+    br_mcp2    = f"DRS_Board0_Group3_Channel7{suffix}"
+    
     br_trg_ref = f"DRS_Board0_Group3_Channel8{suffix}"
     
     keys = tree.keys()
-    for br in [br_sig, br_sig_ref, br_trg, br_trg_ref]:
-        if br not in keys:
-            print(f"        [WARN] Missing branch {br} in tree!")
-            return None
+    if any(br not in keys for br in [br_sig, br_sig_ref, br_mcp1, br_mcp2, br_trg_ref]):
+        return None
             
     arr_sig     = tree[br_sig].array(library="np")
     arr_sig_ref = tree[br_sig_ref].array(library="np")
-    arr_trg     = tree[br_trg].array(library="np")
+    arr_mcp1    = tree[br_mcp1].array(library="np")
+    arr_mcp2    = tree[br_mcp2].array(library="np")
     arr_trg_ref = tree[br_trg_ref].array(library="np")
     
-    if not (arr_sig.shape == arr_sig_ref.shape == arr_trg.shape == arr_trg_ref.shape):
-        print(f"        [ERROR] Shape mismatch in trigger/signal branches!")
-        return None
+    mcp_avg = (arr_mcp1 + arr_mcp2) / 2.0
         
-    return (arr_sig - arr_sig_ref) - (arr_trg - arr_trg_ref)
+    return (arr_sig - arr_sig_ref) - (mcp_avg - arr_trg_ref)
 
 def gaussian_peak_1(x, mean, sigma):
     # Gaussian normalized to peak at 1.0
@@ -680,7 +684,7 @@ def style_paper_axes(ax, xlabel, ylabel, particle_type):
 # ================= UPDATED VELOCITY PLOT WITH FIT ERRORS & 10^8 =================
 def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
     outdir = os.path.dirname(txt_path)
-    pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.pdf")
+    pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_w_avgMCP{pid_label}.pdf")
     
     print("\n[VELOCITY] --------------------------------------------------------")
     print(f"[VELOCITY] Calculating Independent Velocity Fits (PID: {pid_label})")
@@ -743,7 +747,7 @@ def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
 # ================= UPDATED SHARED INTERCEPT PLOT WITH FIT ERRORS & 10^8 =================
 def create_shared_intercept_plot(plot_data, txt_path, pid_label, particle_type):
     outdir = os.path.dirname(txt_path)
-    pdf_path = os.path.join(outdir, f"Z_vs_TOA_SharedInterceptFits_{pid_label}.pdf")
+    pdf_path = os.path.join(outdir, f"Z_vs_TOA_SharedInterceptFits_w_avgMCP{pid_label}.pdf")
     
     print("\n[SHARED FIT] ------------------------------------------------------")
     print(f"[SHARED FIT] Calculating Global Shared Intercept Fit (PID: {pid_label})")
@@ -966,7 +970,7 @@ def main():
     
     # Run the Stats Table and Velocity Plots
     pid_label = f"PID_{args.pid}" if args.pid else "AllParticles"
-    output_txt_path = os.path.join(args.outdir, f"Timing_Statistics_{pid_label}.txt")
+    output_txt_path = os.path.join(args.outdir, f"Timing_Statistics_w_avgMCP{pid_label}.txt")
     generate_stats_table(files, output_txt_path, args.tree, particle_type=args.pid)
     
     print("\n[DONE] All families and velocity plots processed. Data exported successfully.")
