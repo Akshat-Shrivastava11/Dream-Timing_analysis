@@ -86,31 +86,40 @@ TREE_NAME = "EventTree"
 AMP_THRESHOLD = 100.0  
 MIN_ADC_CUT = -100.0
 
-# Using your requested negative limits
-FAMILIES = {
-    "Plastic": {"channels": ["100","102","112", "110"], "tmin": -14.5, "tmax": -11.5, "legend": "Cherenkov-Plastic", "color": "red"},
-    "Quartz":  {"channels": ["104","106", "304","114"], "tmin": -15.0, "tmax": -11.5, "legend": "Cherenkov-Quartz",  "color": "blue"},
-    "SCI":     {"channels": ["105", "107","111","117"], "tmin": -13.5, "tmax":  -9.5, "legend": "Scintillating",     "color": "green"}
+
+# Define your wirechamber branch here
+WC_CHANNELS = {
+    "L1": "DRS_Board7_Group0_Channel0",
+    "R1": "DRS_Board7_Group0_Channel1",
 }
+WC_X_CUT = 100.0
+# Using your requested negative limits
+# FAMILIES = {
+#     "Plastic": {"channels": ["100","102","112", "110"], "tmin": -14.5, "tmax": -11.5, "legend": "Cherenkov-Plastic", "color": "red"},
+#     "Quartz":  {"channels": ["104","106", "304","114"], "tmin": -15.0, "tmax": -11.5, "legend": "Cherenkov-Quartz",  "color": "blue"},
+#     "SCI":     {"channels": ["105", "107","111","117"], "tmin": -13.5, "tmax":  -9.5, "legend": "Scintillating",     "color": "green"}
+# }
 
 #all channels
-# FAMILIES = {
-#     "Plastic": {
-#         "channels": extract_channels(PLASTIC_GRID), 
-#         "tmin": -14.5, "tmax": -11.5, 
-#         "legend": "Cherenkov-Plastic", "color": "red"
-#     },
-#     "Quartz":  {
-#         "channels": extract_channels(QUARTZ_GRID),  
-#         "tmin": -15.0, "tmax": -11.5, 
-#         "legend": "Cherenkov-Quartz",  "color": "blue"
-#     },
-#     "SCI":     {
-#         "channels": extract_channels(SCI_ALL_GRID), 
-#         "tmin": -13.5, "tmax":  -9.5, 
-#         "legend": "Scintillating",     "color": "green"
-#     }
-# }
+FAMILIES = {
+    "Plastic": {
+        "channels": extract_channels(PLASTIC_GRID), 
+        "tmin": -14.5, "tmax": -11.5, 
+        "legend": "Cherenkov-Plastic", "color": "red"
+    },
+    "Quartz":  {
+        "channels": extract_channels(QUARTZ_GRID),  
+        "tmin": -15.0, "tmax": -11.5, 
+        "legend": "Cherenkov-Quartz",  "color": "blue"
+    },
+    # "SCI":     {
+    #     "channels": extract_channels(SCI_ALL_GRID), 
+    #     "tmin": -13.5, "tmax":  -9.5, 
+    #     "legend": "Scintillating",     "color": "green"
+    # }
+
+    "SCI":     {"channels": ["105", "107","111","117"], "tmin": -13.5, "tmax":  -9.5, "legend": "Scintillating",     "color": "green"}
+}
 PID_BRANCH_MAP = {
     "PSD": "DRS_Board7_Group1_Channel1",
     "HoleVeto": "DRS_Board7_Group1_Channel6",
@@ -143,11 +152,12 @@ def get_z_position(run_label):
     if "run1513" in run_label:
         # if "192918" in run_label: return -54.5
         # if "194230" in run_label: return -400.3
-        if "192918" in run_label: return -54.5
-        if "194230" in run_label: return -400.3
+        if "192918" in run_label: return 113.5   # Was -54.5  (+ 168.0)
+        if "194230" in run_label: return -232.3  # Was -400.3 (+ 168.0)
     match = re.search(r"run(\d+)", run_label)
     run_num = int(match.group(1)) if match else None
     z_map = {1501: -168.0, 1507: -218.0, 1511: -268.0}
+    z_map = {1501: 0.0, 1507: -50.0, 1511: -100.0}
     return z_map.get(run_num, -999.0)
 
 def get_particle_selection(particle_type: str) -> dict:
@@ -202,6 +212,42 @@ def compute_adc_mask(tree, code_str):
     
     mask = (peak >= AMP_THRESHOLD) & (min_adc >= MIN_ADC_CUT)
     return ak.to_numpy(mask)
+
+
+def get_hit_times_vectorized(events):
+    """Finds the bin index of the waveform minimum."""
+    if events.ndim != 2:
+        return np.zeros(len(events))
+    baselines = np.mean(events[:, :20], axis=1, keepdims=True)
+    corrected = events - baselines
+    return np.argmin(corrected, axis=1)
+
+def compute_wc_mask(tree, limit=WC_X_CUT):
+    """Generates a boolean mask based on the raw waveform minimum bin difference."""
+    br_l1 = WC_CHANNELS["L1"]
+    br_r1 = WC_CHANNELS["R1"]
+    
+    if br_l1 not in tree.keys() or br_r1 not in tree.keys():
+        print("    [WARN] Wirechamber waveform branches missing. Skipping WC cut.")
+        return np.ones(tree.num_entries, dtype=bool)
+    
+    # Pull the raw waveforms (Notice: no suffix here!)
+    L1 = ak.to_numpy(tree[br_l1].array(library="ak"))
+    R1 = ak.to_numpy(tree[br_r1].array(library="ak"))
+    
+    # Get the bin index of the peak
+    L1_t = get_hit_times_vectorized(L1)
+    R1_t = get_hit_times_vectorized(R1)
+    
+    # Calculate X value (difference in indices)
+    x_positions = L1_t - R1_t
+    
+    # Apply the cut |X| < 80
+    mask = np.abs(x_positions) < limit
+    
+    return mask
+
+
 # ================= CORE TIMING =================
 def get_tfinal_3mm(tree, b, g, c, suffix):
     """
@@ -679,7 +725,7 @@ def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
                 legend_label = f"{fam:<10} | {v_str:<15} | {v_err_str:<15} | {eq_str}"
                 
                 z_fit = np.linspace(min(z_arr) - 20, 400, 200)
-                ax.errorbar(z_arr, mu_arr, yerr=sig_mean_arr, fmt='o', color=color, capsize=3, markersize=4)
+                ax.errorbar(z_arr, mu_arr, yerr=sig_mean_arr, fmt='o', color=color, capsize=2, markersize=2, elinewidth=1)
                 ax.plot(z_fit, slope * z_fit + intercept, '-', color=color, linewidth=2, label=legend_label)
 
             legend_title = f"{'FAMILY':<10} | {'VELOCITY [m/s]':<15} | {'V_ERROR [m/s]':<15} | {'FIT EQUATION'}"
@@ -795,7 +841,7 @@ def create_shared_intercept_plot(plot_data, txt_path, pid_label, particle_type):
                 legend_label = f"{fam:<10} | {v_str:<15} | {v_err_str:<15} | {eq_str}"
 
                 z_fit = np.linspace(min(all_z) - 20, max(all_z) + 20, 200)
-                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=FAMILIES[fam]["color"], capsize=3, markersize=4)
+                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=FAMILIES[fam]["color"],  capsize=2, markersize=2, elinewidth=1)
                 ax.plot(z_fit, m * z_fit + b, '-', color=FAMILIES[fam]["color"], lw=2, label=legend_label)
 
             legend_title = (
@@ -850,9 +896,15 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
                         arr_raw = get_tfinal_3mm(tree, b, g, ch, "_LP2_50")
                         if arr_raw is None: continue
                         
+                        # adc_mask = compute_adc_mask(tree, code_str)
+                        # combined_mask = pid_mask & adc_mask if pid_mask is not None else adc_mask
                         adc_mask = compute_adc_mask(tree, code_str)
-                        combined_mask = pid_mask & adc_mask if pid_mask is not None else adc_mask
-                        
+                        wc_mask = compute_wc_mask(tree) # Will default to the 80.0 limit
+
+                        base_mask = pid_mask & adc_mask if pid_mask is not None else adc_mask
+                        combined_mask = base_mask & wc_mask
+
+
                         arr_adc = arr_raw[combined_mask]
                         arr_time = arr_adc[~np.isnan(arr_adc)]
                         arr_time = arr_time[(arr_time >= xlim[0]) & (arr_time <= xlim[1])]
@@ -903,7 +955,7 @@ def main():
     ap.add_argument("--ana-files", nargs="+", default=None, help="Explicit list of input ROOT files.")
     ap.add_argument("--ana-glob", default=None, help="Glob for input ROOT files.")
     ap.add_argument("--tree", default=TREE_NAME, help="Tree name")
-    ap.add_argument("--outdir", default="./PresiseTiming", help="Output directory")
+    ap.add_argument("--outdir", default="./PresiseTiming/wWirechambermask", help="Output directory")
     ap.add_argument("--pid", default='electron', choices=["muon", "pion", "electron", "proton"], help="Apply PID selection")
 
     args = ap.parse_args()
