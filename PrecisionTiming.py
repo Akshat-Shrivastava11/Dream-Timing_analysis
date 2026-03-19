@@ -118,8 +118,17 @@ FAMILIES = {
     #     "legend": "Scintillating",     "color": "green"
     # }
 
-    "SCI":     {"channels": ["105", "107","111","117"], "tmin": -13.5, "tmax":  -9.5, "legend": "Scintillating",     "color": "green"}
+    "SCI":     {
+        "channels": [
+            "103", "101", "303", "301",
+            "107", "105", "307", "305",
+            "113", "111", "313", "311"
+        ], 
+        "tmin": -13.5, "tmax":  -9.5, 
+        "legend": "Scintillating", "color": "green"
+    }
 }
+
 PID_BRANCH_MAP = {
     "PSD": "DRS_Board7_Group1_Channel1",
     "HoleVeto": "DRS_Board7_Group1_Channel6",
@@ -152,12 +161,12 @@ def get_z_position(run_label):
     if "run1513" in run_label:
         # if "192918" in run_label: return -54.5
         # if "194230" in run_label: return -400.3
-        if "192918" in run_label: return 113.5   # Was -54.5  (+ 168.0)
-        if "194230" in run_label: return -232.3  # Was -400.3 (+ 168.0)
+        if "192918" in run_label: return 163.5   # Was -54.5  (+ 218.0)
+        if "194230" in run_label: return -182.3  # Was -400.3 (+ 218.0)
     match = re.search(r"run(\d+)", run_label)
     run_num = int(match.group(1)) if match else None
-    z_map = {1501: -168.0, 1507: -218.0, 1511: -268.0}
-    z_map = {1501: 0.0, 1507: -50.0, 1511: -100.0}
+    #z_map = {1501: -168.0, 1507: -218.0, 1511: -268.0}
+    z_map = {1501: 50.0, 1507: 0.0, 1511: -50.0}
     return z_map.get(run_num, -999.0)
 
 def get_particle_selection(particle_type: str) -> dict:
@@ -671,7 +680,8 @@ def _resolve_files(args):
 
 
 def style_paper_axes(ax, xlabel, ylabel, particle_type):
-    ax.set_xlabel(xlabel)
+    #ax.set_xlabel(xlabel)
+    ax.set_xlim(-190, 190)
     ax.set_ylabel(ylabel)
     
     display_name = "Positron" if particle_type.lower() == "electron" else particle_type.capitalize()
