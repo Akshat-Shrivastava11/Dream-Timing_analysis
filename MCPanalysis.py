@@ -1,510 +1,333 @@
-import uproot
-import numpy as np
-from scipy.signal import medfilt
-import matplotlib.pyplot as plt
+#!/usr/bin/env python3
 import os
-
-# ---------------------------
-# User settings
-# ---------------------------
-file_path = "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1468_250927145556_TimingDAQ.root"
-
-
-#ALL_CHANNELS = ["DRS_Board0_Group3_Channel6", "DRS_Board0_Group3_Channel7"]
-ALL_CHANNELS = ["DRS_Board0_Group3_Channel6",
-                "DRS_Board1_Group3_Channel6",
-                "DRS_Board2_Group3_Channel6",
-                "DRS_Board3_Group3_Channel6",
-                "DRS_Board0_Group3_Channel7",
-                "DRS_Board1_Group3_Channel7",
-                "DRS_Board2_Group3_Channel7",
-                "DRS_Board3_Group3_Channel7",]
-
-# ===========================================================
-# 2) Polynomial rising-edge t50 extractor
-# ===========================================================
-def fit_polynomial_t50(time, waveform, ten_idx, ninety_idx):
-    print(f" [polyfit] Fit region indices: {ten_idx} → {ninety_idx}")
-
-    x = time[ten_idx:ninety_idx]
-    y = waveform[ten_idx:ninety_idx]
-
-    if len(x) < 4:
-        print("     [polyfit] ERROR: Not enough points.")
-        return np.nan
-
-    # Fit cubic polynomial
-    coeffs = np.polyfit(x, y, deg=3)
-    poly = np.poly1d(coeffs)
-
-    # Solve for 50%
-    half_val = 0.5 * np.max(y)
-    print(f"     [polyfit] Half-height = {half_val:.3f}")
-
-    roots = np.roots(poly - half_val)
-    real_roots = roots[np.isreal(roots)].real
-
-    if len(real_roots) == 0:
-        print("     [polyfit] ERROR: No real t50 root.")
-        return np.nan
-
-    t50 = real_roots[0]
-    print(f"     [polyfit] t50 extracted = {t50:.3f}")
-
-    return t50
-
-
-# ===========================================================
-# 3) Process a single event (baseline, peak, t50)
-# ===========================================================
-from scipy.signal import medfilt
+import re
+import glob
+import argparse
 import numpy as np
+import uproot
+import awkward as ak
+from scipy.optimize import curve_fit
+
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import mplhep as hep
+
+# Apply the CMS style globally
+plt.style.use(hep.style.CMS)
+
+# ================= CONFIGURATION =================
+TREE_NAME = "EventTree"
+AMP_THRESHOLD = 100.0  
+
+PID_BRANCH_MAP = {
+    "PSD": "DRS_Board7_Group1_Channel1",
+    "HoleVeto": "DRS_Board7_Group1_Channel6",
+    "NC": "DRS_Board7_Group1_Channel7",
+    "T3": "DRS_Board7_Group2_Channel0",
+    "T4": "DRS_Board7_Group2_Channel1",
+    "KT1": "DRS_Board7_Group2_Channel2",
+    "KT2": "DRS_Board7_Group2_Channel3",
+    "TTUMuonVeto": "DRS_Board7_Group2_Channel4",
+    "Cer474": "DRS_Board7_Group2_Channel5",
+    "Cer519": "DRS_Board7_Group2_Channel6",
+    "Cer537": "DRS_Board7_Group2_Channel7",
+}
+
+# ================= PID MASKS =================
+def get_service_drs_cut(service_drs: str) -> tuple:
+    cut_default = (0, 1000, -5e4, "Sum")
+    cuts = {
+        "HoleVeto": (100, 350, -2e3, "Sum"),
+        "PSD": (100, 400, -3500.0, "Sum"),
+        "TTUMuonVeto": (200, 400, -2e3, "Sum"),
+        "Cer474": (800, 900, -2000.0, "Sum"),
+        "Cer519": (450, 550, -1000.0, "Sum"),
+        "Cer537": (400, 500, -500.0, "Sum"),
+    }
+    return cuts.get(service_drs, cut_default)
+
+def get_particle_selection(particle_type: str) -> dict:
+    selections = {
+        "muon": {"TTUMuonVeto": True, "PSD": False},
+        "pion": {"TTUMuonVeto": False, "PSD": False, "Cer474": True, "Cer519": True, "Cer537": True},
+        "electron": {"TTUMuonVeto": False, "PSD": True, "Cer474": True, "Cer519": True, "Cer537": True},
+        "proton": {"TTUMuonVeto": False, "PSD": False, "Cer474": False, "Cer519": False, "Cer537": False},
+    }
+    return selections.get(particle_type.lower(), {})
+
+def compute_pid_mask(tree, particle_type):
+    requirements = get_particle_selection(particle_type)
+    if not requirements: return None
+
+    n_entries = tree.num_entries
+    final_mask = np.ones(n_entries, dtype=bool)
+    available_keys = set(tree.keys())
+
+    for det, must_fire in requirements.items():
+        branch_name = PID_BRANCH_MAP.get(det)
+        if not branch_name or branch_name not in available_keys: continue
+        ts_min, ts_max, val_cut, method = get_service_drs_cut(det)
 
-# def process_event(event_idx, wf):
-#     """
-#     Process one waveform and compute t50 using Akshat’s exact polynomial rise-fit method.
-#     Returns: t50 or np.nan
-#     """
-
-#     # ----------------------------------------------------
-#     # Baseline subtraction
-#     # ----------------------------------------------------
-#     baseline_samples = 200
-#     baseline = np.median(wf[:baseline_samples])
-#     baseline_std = 1.4826 * np.median(np.abs(wf[:baseline_samples] - baseline))
-#     wf_bs = wf - baseline
-
-#     # ----------------------------------------------------
-#     # Smoothing for peak-detection only
-#     # ----------------------------------------------------
-#     wf_bs_smooth = medfilt(wf_bs, kernel_size=5)
-
-#     # ----------------------------------------------------
-#     # Peak detection
-#     # ----------------------------------------------------
-#     threshold = 3 * baseline_std
-#     peaks = np.where(wf_bs_smooth > threshold)[0]
-#     if len(peaks) == 0:
-#         print(f"Event {event_idx:04d}: No peak above threshold")
-#         return np.nan
-
-#     # contiguous groups of peaks
-#     groups = np.split(peaks, np.where(np.diff(peaks) != 1)[0] + 1)
-#     if len(groups) != 1:
-#         print(f"Event {event_idx:04d}: Multiple clusters — skipping")
-#         return np.nan
-
-#     rising_region = groups[0]
-#     peak_value = np.max(wf_bs_smooth[rising_region])
-
-#     # ----------------------------------------------------
-#     # 10% – 90% region detection
-#     # ----------------------------------------------------
-#     try:
-#         ten_rel = np.where(wf_bs_smooth[rising_region] >= 0.10 * peak_value)[0][0]
-#         ninety_rel = np.where(wf_bs_smooth[rising_region] >= 0.90 * peak_value)[0][0]
-#     except Exception:
-#         print(f"Event {event_idx:04d}: Bad 10–90 region")
-#         return np.nan
-
-#     ten_idx = rising_region[0] + ten_rel
-#     ninety_idx = rising_region[0] + ninety_rel
-
-#     if ten_idx >= ninety_idx:
-#         print(f"Event {event_idx:04d}: Invalid window (ten >= ninety)")
-#         return np.nan
-
-#     # ----------------------------------------------------
-#     # Extract RAW waveform points for polynomial fit
-#     # ----------------------------------------------------
-#     t = np.arange(len(wf_bs))
-#     t_poly = t[ten_idx:ninety_idx+1]
-#     y_poly = wf_bs[ten_idx:ninety_idx+1]
-
-#     if len(t_poly) < 6:
-#         print(f"Event {event_idx:04d}:  Too few points ({len(t_poly)}) for poly fit")
-#         return np.nan
-
-#     # ----------------------------------------------------
-#     # 3rd-order polynomial fit
-#     # ----------------------------------------------------
-#     coeffs = np.polyfit(t_poly, y_poly, 3)
-#     a, b, c, d = coeffs
-
-#     half_height = 0.5 * peak_value
-
-#     # Solve cubic for half-height
-#     roots = np.roots([a, b, c, d - half_height])
-#     real_roots = [
-#         r.real for r in roots
-#         if np.isreal(r) and ten_idx <= r.real <= ninety_idx
-#     ]
-
-#     if len(real_roots) == 0:
-#         print(f"Event {event_idx:04d}: No valid t50 root")
-#         return np.nan
-
-#     t50 = real_roots[0]
-#     print(f"Event {event_idx:04d}: ✔ t50 = {t50:.2f}")
-
-#     return t50
-
-
-def process_event_loose(event_idx, wf):
-    """
-    Process one waveform and compute t50 with a looser criterion.
-    Returns: t50 or np.nan if completely unusable.
-    """
-
-    # ----------------------------------------------------
-    # Baseline subtraction
-    # ----------------------------------------------------
-    baseline_samples = 200
-    baseline = np.median(wf[:baseline_samples])
-    baseline_std = 1.4826 * np.median(np.abs(wf[:baseline_samples] - baseline))
-    wf_bs = wf - baseline
-
-    # ----------------------------------------------------
-    # Smoothing for peak detection
-    # ----------------------------------------------------
-    wf_bs_smooth = medfilt(wf_bs, kernel_size=5)
-
-    # ----------------------------------------------------
-    # Peak detection (looser: 2 * baseline_std)
-    # ----------------------------------------------------
-    threshold = 3 * baseline_std
-    peaks = np.where(wf_bs_smooth > threshold)[0]
-
-    if len(peaks) == 0:
-        # No peaks, fallback: use the whole waveform as rising region
-        rising_region = np.arange(len(wf_bs))
-        peak_value = np.max(wf_bs_smooth)
-    else:
-        # Merge all contiguous clusters into one rising region
-        groups = np.split(peaks, np.where(np.diff(peaks) != 1)[0] + 1)
-        rising_region = np.concatenate(groups)
-        peak_value = np.max(wf_bs_smooth[rising_region])
-
-    # ----------------------------------------------------
-    # 10% – 90% region detection (looser)
-    # ----------------------------------------------------
-    ten_candidates = np.where(wf_bs_smooth[rising_region] >= 0.10 * peak_value)[0]
-    ninety_candidates = np.where(wf_bs_smooth[rising_region] >= 0.90 * peak_value)[0]
-
-    if len(ten_candidates) == 0:
-        ten_idx = rising_region[0]
-    else:
-        ten_idx = rising_region[ten_candidates[0]]
-
-    if len(ninety_candidates) == 0:
-        ninety_idx = rising_region[-1]
-    else:
-        ninety_idx = rising_region[ninety_candidates[0]]
-
-    # Safety check
-    if ten_idx >= ninety_idx:
-        ninety_idx = ten_idx + 1
-        if ninety_idx >= len(wf_bs):
-            ninety_idx = len(wf_bs) - 1
-
-    # ----------------------------------------------------
-    # Polynomial fit (3rd order)
-    # ----------------------------------------------------
-    t_poly = np.arange(ten_idx, ninety_idx + 1)
-    y_poly = wf_bs[ten_idx:ninety_idx + 1]
-
-    if len(t_poly) < 4:
-        # Too few points, return midpoint as fallback
-        t50 = ten_idx + (ninety_idx - ten_idx) / 2
-        return t50
-
-    coeffs = np.polyfit(t_poly, y_poly, 3)
-    a, b, c, d = coeffs
-    half_height = 0.5 * peak_value
-
-    roots = np.roots([a, b, c, d - half_height])
-    real_roots = [r.real for r in roots if np.isreal(r) and ten_idx <= r.real <= ninety_idx]
-
-    if len(real_roots) == 0:
-        # Looser fallback: midpoint
-        t50 = ten_idx + (ninety_idx - ten_idx) / 2
-    else:
-        t50 = real_roots[0]
-
-    real_t50 =  0.2 * t50  # convert to ns assuming 0.2 ns sampling
-    return real_t50
-
-
-def process_event_tighter(event_idx, wf):
-    """
-    Process one waveform and compute t50 with slightly tighter criteria.
-    Returns: t50 or np.nan if completely unusable.
-    """
-
-    # ----------------------------------------------------
-    # Baseline subtraction
-    # ----------------------------------------------------
-    baseline_samples = 200
-    baseline = np.median(wf[:baseline_samples])
-    baseline_std = 1.4826 * np.median(np.abs(wf[:baseline_samples] - baseline))
-    wf_bs = wf - baseline
-
-    # ----------------------------------------------------
-    # Smoothing for peak detection
-    # ----------------------------------------------------
-    wf_bs_smooth = medfilt(wf_bs, kernel_size=5)
-
-    # ----------------------------------------------------
-    # Peak detection (tighter: 3 × baseline_std)
-    # ----------------------------------------------------
-    threshold = 3 * baseline_std
-    peaks = np.where(wf_bs_smooth > threshold)[0]
-
-    if len(peaks) == 0:
-        print(f"Event {event_idx:04d}: ❌ No peak above threshold")
-        return np.nan
-
-    # Split into contiguous groups
-    groups = np.split(peaks, np.where(np.diff(peaks) != 1)[0] + 1)
-    
-    # Take only the group with the **highest peak**
-    peak_values = [np.max(wf_bs_smooth[g]) for g in groups]
-    best_group_idx = np.argmax(peak_values)
-    rising_region = groups[best_group_idx]
-    peak_value = peak_values[best_group_idx]
-
-    # ----------------------------------------------------
-    # 10% – 90% region detection (tighter)
-    # ----------------------------------------------------
-    ten_candidates = np.where(wf_bs_smooth[rising_region] >= 0.10 * peak_value)[0]
-    ninety_candidates = np.where(wf_bs_smooth[rising_region] >= 0.90 * peak_value)[0]
-
-    if len(ten_candidates) == 0 or len(ninety_candidates) == 0:
-        print(f"Event {event_idx:04d}: ❌ Cannot define 10–90% region")
-        return np.nan
-
-    ten_idx = rising_region[ten_candidates[0]]
-    ninety_idx = rising_region[ninety_candidates[0]]
-
-    if ten_idx >= ninety_idx:
-        print(f"Event {event_idx:04d}: ❌ Invalid 10–90% window")
-        return np.nan
-
-    # ----------------------------------------------------
-    # Polynomial fit (3rd order)
-    # ----------------------------------------------------
-    t_poly = np.arange(ten_idx, ninety_idx + 1)
-    y_poly = wf_bs[ten_idx:ninety_idx + 1]
-
-    if len(t_poly) < 6:
-        print(f"Event {event_idx:04d}: ❌ Too few points for poly fit")
-        return np.nan
-
-    coeffs = np.polyfit(t_poly, y_poly, 3)
-    a, b, c, d = coeffs
-    half_height = 0.5 * peak_value
-
-    roots = np.roots([a, b, c, d - half_height])
-    real_roots = [r.real for r in roots if np.isreal(r) and ten_idx <= r.real <= ninety_idx]
-
-    if len(real_roots) == 0:
-        print(f"Event {event_idx:04d}: ❌ No valid t50 root")
-        return np.nan
-
-    t50 = real_roots[0]
-    print(f"Event {event_idx:04d}: ✔ t50 = {t50:.2f}")
-    real_t50 =  0.2 * t50  # convert to ns assuming 0.2 ns sampling
-    return real_t50
-
-
-SAMPLE_TIME_NS = 0.2  
-def process_event_medium(event_idx, wf):
-    SAMPLE_TIME_NS = 0.2
-    baseline_samples = 200
-    baseline = np.median(wf[:baseline_samples])
-    baseline_std = 1.4826 * np.median(np.abs(wf[:baseline_samples] - baseline))
-    wf_bs = wf - baseline
-
-    # flip negative MCP pulse
-    wf_bs_flip = -wf_bs
-
-    wf_smooth = medfilt(wf_bs_flip, kernel_size=5)
-    threshold = 2.5 * baseline_std
-    peaks = np.where(wf_smooth > threshold)[0]
-
-    if len(peaks) == 0:
-        rising_region = np.arange(len(wf_bs_flip))
-    else:
-        groups = np.split(peaks, np.where(np.diff(peaks) != 1)[0] + 1)
-        rising_region = np.concatenate(groups)
-
-    peak_value = np.max(wf_smooth[rising_region])
-
-    ten_candidates = np.where(wf_smooth[rising_region] >= 0.10 * peak_value)[0]
-    ninety_candidates = np.where(wf_smooth[rising_region] >= 0.90 * peak_value)[0]
-
-    ten_idx = rising_region[ten_candidates[0]] if len(ten_candidates) else rising_region[0]
-    ninety_idx = rising_region[ninety_candidates[0]] if len(ninety_candidates) else rising_region[-1]
-
-    if ten_idx >= ninety_idx:
-        ninety_idx = min(ten_idx + 1, len(wf_bs_flip)-1)
-
-    t_poly = np.arange(ten_idx, ninety_idx+1)
-    y_poly = wf_bs_flip[ten_idx:ninety_idx+1]
-
-    if len(t_poly) < 4:
-        t50_idx = ten_idx + (ninety_idx - ten_idx)/2
-    else:
-        coeffs = np.polyfit(t_poly, y_poly, 3)
-        a,b,c,d = coeffs
-        half_height = 0.5 * peak_value
-        roots = np.roots([a,b,c,d - half_height])
-        real_roots = [r.real for r in roots if np.isreal(r) and ten_idx <= r.real <= ninety_idx]
-        t50_idx = real_roots[0] if real_roots else ten_idx + (ninety_idx - ten_idx)/2
-
-    t50_ns = t50_idx * SAMPLE_TIME_NS
-    return t50_ns
-
-# ===========================================================
-# 4) Plot histogram + save PDF
-# ===========================================================
-def save_t50_pdf(channel, t50_values, outdir="HG-Dream_timing"):
-    channel_dir = os.path.join(outdir, channel, "t50_hists")
-    os.makedirs(outdir, exist_ok=True)
-    pdf_path = outdir + f"/{channel}_t50_hist.pdf"
-    print(f"   [plot] Saving t50 PDF for {channel} → {outdir}")
-    plt.figure(figsize=(8, 5))
-    clean = t50_values[~np.isnan(t50_values)]
-    plt.hist(clean, bins=60, alpha=0.7, histtype='step', color='blue')
-    plt.title(f"t50 Distribution — {channel}")
-    plt.xlabel("t50 (ns)")
-    plt.ylabel("Events")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(pdf_path)
-    plt.close()
-
-
-# Save a single waveform plot with baseline & fit overlay
-def save_waveform_plot(channel, event_idx, wf, time, ten_idx, ninety_idx, t50, outdir="HG-Dream_timing"):
-    channel_dir = os.path.join(outdir, channel, "waveforms")
-    os.makedirs(channel_dir, exist_ok=True)
-    pdf_path = os.path.join(channel_dir, f"{channel}_event{event_idx:04d}.pdf")
-
-    plt.figure(figsize=(10, 4))
-    plt.plot(time, -wf, label="Baseline-subtracted", alpha=0.7)
-    plt.axvspan(time[ten_idx], time[ninety_idx], color="yellow", alpha=0.3, label="10–90% region")
-    if not np.isnan(t50):
-        plt.axvline(t50, color="red", linestyle="--", label=f"t50 = {t50:.2f} ns")
-    plt.title(f"{channel} — Event {event_idx}")
-    plt.xlabel("Time (ns)")
-    plt.ylabel("Amplitude")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(pdf_path)
-    plt.close()
-
-
-# ===========================================================
-# 5) Process one *channel* fully
-# ===========================================================
-def process_channel(tree, channel, max_events=7000, output_dir="HG-Dream_timing"):
-    """
-    Process all events for a given channel, compute t50 if possible, 
-    and save waveform plots and t50 histogram.
-    """
-
-    print("\n=====================================================")
-    print(f"   PROCESSING CHANNEL: {channel}")
-    print("=====================================================")
-
-    branch = channel
-    if branch not in tree.keys():
-        print(f"   [ERROR] Branch not found: {branch}")
-        return
-
-    wf_array = tree[branch].array(library="np")
-    n_events = min(max_events, len(wf_array))
-    print(f"   Total events = {len(wf_array)}, using = {n_events}")
-
-    t50_list = []
-    time = np.arange(len(wf_array[0])) * 0.2  # assuming 0.2 ns sampling
-
-    for i in range(n_events):
-        wf = wf_array[i]
-
-        # ----------------------------
-        # Baseline subtraction
-        # ----------------------------
-        baseline_samples = 200
-        baseline = np.median(wf[:baseline_samples])
-        wf_bs = wf - baseline
-
-        # ----------------------------
-        # Compute t50 (if possible)
-        # ----------------------------
-        t50 = process_event_medium(i, wf)
-        t50_list.append(t50)
-
-        # ----------------------------
-        # Determine 10–90% region for plotting
-        # ----------------------------
         try:
-            wf_smooth = medfilt(wf_bs, kernel_size=5)
-            peaks = np.where(wf_smooth > 3 * 1.4826 * np.median(np.abs(wf[:baseline_samples] - baseline)))[0]
-
-            if len(peaks) >= 1:
-                groups = np.split(peaks, np.where(np.diff(peaks) != 1)[0] + 1)
-                rising_region = groups[0]
-                ten_rel = np.where(wf_smooth[rising_region] >= 0.10 * np.max(wf_smooth[rising_region]))[0][0]
-                ninety_rel = np.where(wf_smooth[rising_region] >= 0.90 * np.max(wf_smooth[rising_region]))[0][0]
-                ten_idx = rising_region[0] + ten_rel
-                ninety_idx = rising_region[0] + ninety_rel
+            waveforms = tree[branch_name].array(library="ak")
+            if method == "Sum":
+                baseline = ak.mean(waveforms[:, :30], axis=1)
+                waveforms_blsub = waveforms - baseline
+                window_sum = ak.sum(waveforms_blsub[:, int(ts_min):int(ts_max)], axis=1)
+                is_fired = ak.to_numpy(window_sum) < val_cut
             else:
-                ten_idx, ninety_idx = 0, len(wf_bs)-1
+                continue
+
+            final_mask = final_mask & is_fired if must_fire else final_mask & (~is_fired)
         except Exception:
-            ten_idx, ninety_idx = 0, len(wf_bs)-1
+            continue
+    return final_mask
 
-        # ----------------------------
-        # Save waveform plot
-        # ----------------------------
-        save_waveform_plot(channel, i, wf_bs, time, ten_idx, ninety_idx, t50, output_dir)
+# ================= MATH HELPERS =================
+def gaussian_peak_1(x, mean, sigma):
+    return np.exp(-0.5 * ((x - mean) / sigma) ** 2)
 
-    # ----------------------------
-    # Save t50 histogram
-    # ----------------------------
-    save_t50_pdf(channel, np.array(t50_list), output_dir)
+def _run_label(path: str) -> str:
+    m = re.search(r"(run\d+_\d{11,12})", os.path.basename(path))
+    return m.group(1) if m else os.path.splitext(os.path.basename(path))[0]
 
+# ================= MINI MCP STUDY CORE =================
+def run_mini_mcp_study(files, outdir, tree_name, particle_type):
+    os.makedirs(outdir, exist_ok=True)
+    out_pdf = os.path.join(outdir, f"MINI_MCP_STUDY_{particle_type if particle_type else 'AllParticles'}.pdf")
+    suffix = "_LP2_50"
 
+    print(f"\n[MCP STUDY] ------------------------------------------------------")
+    print(f"[MCP STUDY] Running Mini MCP Analysis (Channel 6 vs Channel 7)")
 
-# ===========================================================
-# 6) MAIN controller function
-# ===========================================================
-def run_all_channels(root_file, channel_subset=None, max_events=200, output_dir="HG-Dream_timing"):
-    print("\n========== Loading ROOT File ==========")
-    tree = uproot.open(root_file)["EventTree"]
+    with PdfPages(out_pdf) as pdf:
+        for fpath in files:
+            rl = _run_label(fpath)
+            print(f"  -> Processing Run {rl}...")
+            
+            try:
+                uf = uproot.open(fpath)
+                tree = uf[tree_name]
+                
+                # Check for branches
+                br_t6 = f"DRS_Board0_Group3_Channel6{suffix}"
+                br_t7 = f"DRS_Board0_Group3_Channel7{suffix}"
+                br_w6 = f"DRS_Board0_Group3_Channel6"
+                br_w7 = f"DRS_Board0_Group3_Channel7"
+                
+                if not all(b in tree.keys() for b in [br_t6, br_t7, br_w6, br_w7]):
+                    print(f"     [SKIP] Missing MCP branches in {rl}")
+                    continue
+                
+                # Get PID mask
+                pid_mask = compute_pid_mask(tree, particle_type) if particle_type else np.ones(tree.num_entries, dtype=bool)
+                if pid_mask is None: pid_mask = np.ones(tree.num_entries, dtype=bool)
 
-    if channel_subset is None:
-        channel_subset = ALL_CHANNELS
+                # Get Times
+                t6 = tree[br_t6].array(library="np")
+                t7 = tree[br_t7].array(library="np")
+                
+                # Get Waveforms and calculate Peak ADC
+                w6 = tree[br_w6].array(library="ak")
+                w7 = tree[br_w7].array(library="ak")
+                
+                # Baseline subtraction (first 30 bins)
+                bl6 = ak.mean(w6[:, :30], axis=1)
+                bl7 = ak.mean(w7[:, :30], axis=1)
+                w6_sub = w6 - bl6
+                w7_sub = w7 - bl7
+                
+                p6 = ak.to_numpy(ak.max(w6_sub, axis=1))
+                p7 = ak.to_numpy(ak.max(w7_sub, axis=1))
+                
+                # -------------------------------------------------------------
+                # INDEPENDENT FIRING LOGIC
+                # -------------------------------------------------------------
+                fire6 = (p6 > AMP_THRESHOLD) & (~np.isnan(t6))
+                fire7 = (p7 > AMP_THRESHOLD) & (~np.isnan(t7))
+                
+                both_fire = fire6 & fire7 & pid_mask
+                only_6_fire = fire6 & (~fire7) & pid_mask
+                only_7_fire = (~fire6) & fire7 & pid_mask
+                
+                count_both = np.sum(both_fire)
+                count_only6 = np.sum(only_6_fire)
+                count_only7 = np.sum(only_7_fire)
+                
+                # -------------------------------------------------------------
+                # Build a common mask for clean scatter/correlation plots
+                # -------------------------------------------------------------
+                valid_mask = both_fire
+                
+                t6_c, t7_c = t6[valid_mask], t7[valid_mask]
+                p6_c, p7_c = p6[valid_mask], p7[valid_mask]
+                w6_c, w7_c = w6_sub[valid_mask], w7_sub[valid_mask]
+                
+                if len(t6_c) < 50:
+                    print(f"     [SKIP] Not enough valid events ({len(t6_c)})")
+                    continue
+                    
+            except Exception as e:
+                print(f"     [ERROR] Processing {rl}: {e}")
+                continue
 
-    print("\n========== Channels to Process ==========")
-    for ch in channel_subset:
-        print("   ", ch)
+            # =================================================================
+            # PAGE 1: CORRELATIONS & TIME DIFFERENCE
+            # =================================================================
+            fig, axes = plt.subplots(2, 2, figsize=(16, 14))
+            
+            display_name = "Positron" if particle_type == "electron" else (particle_type.capitalize() if particle_type else "All Particles")
+            fig.suptitle(f"Mini MCP Study | Run {rl} | 40 GeV {display_name}", fontsize=20, fontweight='bold')
+            
+            # -------------------------------------------------
+            # Plot 1: Time Correlation (105 to 125 ns range)
+            # -------------------------------------------------
+            ax = axes[0, 0]
+            h, xedges, yedges, im = ax.hist2d(t6_c, t7_c, bins=100, range=[[105, 125], [105, 125]], cmap='viridis', cmin=1)
+            ax.plot([105, 125], [105, 125], 'r--', alpha=0.5, label="y = x")
+            fig.colorbar(im, ax=ax)
+            ax.set_title("Time of Arrival Correlation (Both Fired)")
+            ax.set_xlabel(f"MCP 6 {suffix} [ns]")
+            ax.set_ylabel(f"MCP 7 {suffix} [ns]")
+            ax.legend(loc="upper left")
 
-    for ch in channel_subset:
-        process_channel(tree, ch, max_events=max_events, output_dir=output_dir)
+            # -------------------------------------------------
+            # Plot 2: Peak ADC Correlation
+            # -------------------------------------------------
+            ax = axes[0, 1]
+            max_adc = max(np.percentile(p6_c, 99), np.percentile(p7_c, 99))
+            h, xedges, yedges, im = ax.hist2d(p6_c, p7_c, bins=100, range=[[0, max_adc], [0, max_adc]], cmap='plasma', cmin=1)
+            ax.plot([0, max_adc], [0, max_adc], 'r--', alpha=0.5, label="y = x")
+            fig.colorbar(im, ax=ax)
+            ax.set_title("Peak ADC Correlation (Both Fired)")
+            ax.set_xlabel("MCP 6 Peak ADC [mV]")
+            ax.set_ylabel("MCP 7 Peak ADC [mV]")
+            ax.legend(loc="upper left")
 
+            # -------------------------------------------------
+            # Plot 3: Delta T (MCP 7 - MCP 6)
+            # -------------------------------------------------
+            ax = axes[1, 0]
+            dt = t7_c - t6_c
+            
+            dt_mean = np.mean(dt)
+            dt_min, dt_max = dt_mean - 0.5, dt_mean + 0.5
+            dt_cut = dt[(dt >= dt_min) & (dt <= dt_max)]
+            
+            if len(dt_cut) > 10:
+                bins = np.linspace(dt_min, dt_max, 100)
+                centers = 0.5 * (bins[1:] + bins[:-1])
+                counts, _ = np.histogram(dt_cut, bins=bins)
+                
+                if counts.max() > 0:
+                    counts_norm = counts / counts.max()
+                    ax.step(centers, counts_norm, where="mid", color='darkorange', alpha=0.6)
+                    
+                    try:
+                        mode_idx = np.argmax(counts)
+                        p0 = [centers[mode_idx], dt_cut.std()]
+                        bounds = ([dt_min, 0.001], [dt_max, 5.0]) 
+                        
+                        popt, _ = curve_fit(gaussian_peak_1, centers, counts_norm, p0=p0, bounds=bounds)
+                        fit_mu, fit_sig = popt[0], abs(popt[1])
+                        
+                        x_fine = np.linspace(dt_min, dt_max, 500)
+                        ax.plot(x_fine, gaussian_peak_1(x_fine, fit_mu, fit_sig), 'r-', lw=3, 
+                                label=f"Fit $\mu$: {fit_mu:.3f} ns\nFit $\sigma$: {fit_sig:.3f} ns\nFWHM: {2.355*fit_sig:.3f} ns")
+                    except Exception as e:
+                        print(f"     [FIT WARN] Gaussian fit failed for Delta T: {e}")
+                        ax.plot([], [], ' ', label="Fit Failed")
+            
+            ax.set_title(f"$\Delta t$ (MCP 7 - MCP 6)")
+            ax.set_xlabel("$\Delta t$ [ns]")
+            ax.set_ylabel("Normalized Events")
+            ax.legend(loc="upper right", frameon=False, fontsize=12)
 
-# ===========================================================
-# 7) Example run
-# ===========================================================
-if __name__ == "__main__":
-    file_path = "/lustre/research/hep/cmadrid/HG-DREAM/CERN/ROOT_TimingDAQ/run1468_250927145556_TimingDAQ.root"
+            # -------------------------------------------------
+            # Plot 4: Firing Correlation Bar Chart
+            # -------------------------------------------------
+            ax = axes[1, 1]
+            categories = ['Both Fire', 'Only MCP 6', 'Only MCP 7']
+            counts_bar = [count_both, count_only6, count_only7]
+            
+            bars = ax.bar(categories, counts_bar, color=['mediumseagreen', 'steelblue', 'indianred'], alpha=0.8)
+            ax.set_title("MCP Firing Correlation (PID Applied)")
+            ax.set_ylabel("Number of Events")
+            
+            # Add value labels on top of the bars
+            max_count = max(counts_bar)
+            for bar in bars:
+                yval = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2, yval + (max_count * 0.02), 
+                        int(yval), ha='center', va='bottom', fontsize=14, fontweight='bold')
+                
+            ax.set_ylim(0, max_count * 1.15 if max_count > 0 else 10)
+
+            hep.cms.label(ax=axes[0, 0], exp="CaloX", data=True, rlabel=f"Run {rl}")
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+            pdf.savefig(fig)
+            plt.close(fig)
+
+            # =================================================================
+            # PAGE 2: WAVEFORMS
+            # =================================================================
+            fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+            fig.suptitle(f"Average MCP Waveforms (Both Fired) | Run {rl}", fontsize=18, fontweight='bold')
+            
+            w6_np = ak.to_numpy(w6_c)
+            w7_np = ak.to_numpy(w7_c)
+            
+            time_bins = np.arange(w6_np.shape[1]) * 0.2 
+            
+            for idx, (w_np, name) in enumerate([(w6_np, "MCP 6"), (w7_np, "MCP 7")]):
+                ax = axes[idx]
+                w_mean = np.mean(w_np, axis=0)
+                w_std = np.std(w_np, axis=0)
+                
+                ax.plot(time_bins, w_mean, color='black', lw=2, label="Mean Waveform")
+                ax.fill_between(time_bins, w_mean - w_std, w_mean + w_std, color='steelblue', alpha=0.4, label="$\pm 1\sigma$ Spread")
+                
+                ax.set_title(name)
+                ax.set_xlabel("Time [ns]")
+                ax.set_ylabel("Amplitude [mV]")
+                ax.legend(loc="upper right", frameon=False)
+                ax.set_xlim(0, max(time_bins))
+            
+            hep.cms.label(ax=axes[0], exp="CaloX", data=True, rlabel=f"Run {rl}")
+            fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    print(f"[MCP STUDY] Saved Mini MCP Study to: {out_pdf}")
+
+# ================= EXECUTION =================
+def _resolve_files(args):
+    if args.ana_files: files = list(args.ana_files)
+    else: files = sorted(glob.glob(args.ana_glob))
+    return files
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ana-files", nargs="+", default=None, help="Explicit list of input ROOT files.")
+    ap.add_argument("--ana-glob", default=None, help="Glob for input ROOT files.")
+    ap.add_argument("--outdir", default="./PreciseTiming/MCP_Study", help="Output directory")
+    ap.add_argument("--pid", default='electron', choices=["muon", "pion", "electron", "proton"], help="Apply PID selection")
+
+    args = ap.parse_args()
+
+    if args.ana_files is None and args.ana_glob is None:
+        raise SystemExit("[FATAL ERROR] Provide either --ana-files or --ana-glob")
+
+    files = _resolve_files(args)
+    if not files:
+        raise SystemExit("[FATAL ERROR] No files matched your selection")
+
+    print(f"[INIT] Resolved {len(files)} files.")
+    print(f"[INIT] Output directory: {args.outdir}")
+    print(f"[INIT] Particle Type: {args.pid}")
     
-    run_all_channels(
-        root_file=file_path,
-        channel_subset=ALL_CHANNELS,
-        max_events=50000,
-        output_dir="MCPWaveform_deltat_analysis"
-    )
+    # Run the Mini MCP Study
+    run_mini_mcp_study(files, args.outdir, TREE_NAME, args.pid)
+
+if __name__ == "__main__":
+    main()
