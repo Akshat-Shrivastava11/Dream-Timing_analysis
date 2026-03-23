@@ -688,12 +688,30 @@ def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
             # INCREASED SIZE HERE
             fig, ax = plt.subplots(figsize=(14, 10))
             style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
-            
-            for fam, data in plot_data.items():
-                if not data["z"]: continue
-                z_arr, mu_arr, sig_mean_arr = np.array(data["z"]), np.array(data["mu"]), np.array(data["sig"])
+
+
+            for fam, channels_dict in plot_data.items():
+                # --- FIX STARTS HERE: Flatten the channel data into family data ---
+                combined_z = []
+                combined_mu = []
+                combined_sig = []
+                
+                for ch, data in channels_dict.items():
+                    combined_z.extend(data["z"])
+                    combined_mu.extend(data["mu"])
+                    combined_sig.extend(data["sig"])
+                    
+                if not combined_z: 
+                    continue
+                    
+                z_arr = np.array(combined_z)
+                mu_arr = np.array(combined_mu)
+                sig_mean_arr = np.array(combined_sig)
+                # --- FIX ENDS HERE ---
+
                 color = FAMILIES[fam]["color"]
                 
+                # Now the rest of your fitting logic works on the flattened arrays
                 weights = 1.0 / sig_mean_arr
                 params, cov = np.polyfit(z_arr, mu_arr, 1, w=weights, cov=True)
                 slope, intercept = params[0], params[1]
@@ -863,99 +881,107 @@ def create_channel_velocity_plots(plot_data, txt_path, pid_label, particle_type)
     print("\n[VELOCITY] --------------------------------------------------------")
     print(f"[VELOCITY] Calculating Per-Channel Velocity Fits (PID: {pid_label})")
     
+    # Store all individual velocities per family for the histogramming step
+    fam_v_lists = {fam: [] for fam in FAMILIES.keys()}
+    
     with open(txt_path, "a") as f_out:
         f_out.write("\n" + "=" * 120 + "\n")
         f_out.write(f"{'FAMILY':<10} | {'CHANNEL':<7} | {'VELOCITY [m/s]':<15} | {'V_ERROR [m/s]':<15} | {'FIT EQUATION'}\n")
         f_out.write("=" * 120 + "\n")
         
         with PdfPages(pdf_path) as pdf:
-            # Create one plot for all families overlaid
-            fig, ax = plt.subplots(figsize=(14, 10))
-            style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
+            # --- PAGE 1: Scatter plot of Z vs TOA (Linear Fits) ---
+            fig1, ax1 = plt.subplots(figsize=(14, 10))
+            style_paper_axes(ax1, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
             
             for fam, channels_dict in plot_data.items():
                 color = FAMILIES[fam]["color"]
+                fam_slopes, fam_slope_errs, fam_intercepts, fam_intercept_weights = [], [], [], []
                 
-                fam_slopes = []
-                fam_slope_errs = []
-                fam_intercepts = []
-                fam_intercept_weights = []
-                
-                # 1. FIT EACH CHANNEL INDIVIDUALLY
                 for ch, data in channels_dict.items():
-                    # Need at least 2 Z-positions to draw a line
-                    if len(data["z"]) < 2: 
-                        continue
-                        
-                    z_arr = np.array(data["z"])
-                    mu_arr = np.array(data["mu"])
-                    sig_arr = np.array(data["sig"])
-                    
-                    # Weighted linear fit for this specific channel
+                    if len(data["z"]) < 2: continue
+                    z_arr, mu_arr, sig_arr = np.array(data["z"]), np.array(data["mu"]), np.array(data["sig"])
                     weights = 1.0 / sig_arr
                     
                     try:
-                        # FIX: cov='unscaled' forces errors to be calculated from our weights, 
-                        # preventing the N > order+2 crash on 2-point channels!
                         params, cov = np.polyfit(z_arr, mu_arr, 1, w=weights, cov='unscaled')
-                    except Exception as e:
-                        print(f"        [WARN] Fit failed for {fam} Ch {ch}: {e}. Skipping.")
-                        continue
+                    except: continue
                         
                     slope, intercept = params[0], params[1]
                     slope_err = np.sqrt(cov[0,0])
                     
+                    # Store variables for overall weighted avg
                     fam_slopes.append(slope)
                     fam_slope_errs.append(slope_err)
                     fam_intercepts.append(intercept)
                     fam_intercept_weights.append(1.0 / np.sqrt(cov[1,1]))
                     
-                    # Plot the individual channel points and thin fit line
-                    ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='none', ecolor=color, alpha=0.3, capsize=3)
-                    ax.plot(z_arr, mu_arr, marker='o', color=color, alpha=0.3, markersize=6, linestyle='none')
-                    
-                    z_fit = np.linspace(min(z_arr) - 20, 400, 200)
-                    ax.plot(z_fit, slope * z_fit + intercept, '-', color=color, alpha=0.2, linewidth=1)
-                    
-                    # Calculate individual velocity for the text log
+                    # Calculate velocity and store for histogram
                     v = abs(1.0 / slope) * 1e6 if slope != 0 else 0
+                    fam_v_lists[fam].append(v / 1e8) # Storing in units of 10^8 m/s
+                    
                     v_err = (v**2) * (slope_err * 1e-6) if slope != 0 else 0
                     f_out.write(f"{fam:<10} | {ch:<7} | {v/1e8:.4f}e8      | {v_err/1e8:.4f}e8      | t = ({slope:.4f})z {'+' if intercept >= 0 else '-'} {abs(intercept):.2f}\n")
+                    
+                    # Plot thin lines
+                    ax1.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='none', ecolor=color, alpha=0.3, capsize=3)
+                    ax1.plot(z_arr, mu_arr, marker='o', color=color, alpha=0.3, markersize=6, linestyle='none')
                 
-                # 2. CALCULATE THE GLOBAL "FINAL" VELOCITY FOR THE FAMILY
                 if len(fam_slopes) > 0:
-                    # Weighted average of all the individual slopes
-                    weights_slope = 1.0 / (np.array(fam_slope_errs)**2)
-                    final_slope = np.sum(np.array(fam_slopes) * weights_slope) / np.sum(weights_slope)
-                    final_slope_err = np.sqrt(1.0 / np.sum(weights_slope))
+                    w_slope = 1.0 / (np.array(fam_slope_errs)**2)
+                    f_slope = np.sum(np.array(fam_slopes) * w_slope) / np.sum(w_slope)
+                    f_slope_err = np.sqrt(1.0 / np.sum(w_slope))
+                    f_intercept = np.average(fam_intercepts, weights=fam_intercept_weights)
                     
-                    # We average the intercepts just to anchor the global line in the middle of the cluster
-                    final_intercept = np.average(fam_intercepts, weights=fam_intercept_weights)
-                    
-                    final_v = abs(1.0 / final_slope) * 1e6 if final_slope != 0 else 0
-                    final_v_err = (final_v**2) * (final_slope_err * 1e-6) if final_slope != 0 else 0
-                    
-                    v_str = f"{final_v/1e8:.4f}e8"
-                    v_err_str = f"{final_v_err/1e8:.4f}e8"
-                    eq_str = f"t = ({final_slope:.4f} +/- {final_slope_err:.4f})z {'+' if final_intercept >= 0 else '-'} {abs(final_intercept):.2f}"
-                    
-                    f_out.write("-" * 120 + "\n")
-                    f_out.write(f"{fam:<10} | OVERALL | {v_str:<15} | {v_err_str:<15} | {eq_str}\n")
-                    f_out.write("-" * 120 + "\n")
-                    
-                    # Plot the THICK family line on top
-                    legend_label = f"OVERALL {fam:<7} | {v_str:<10} | {v_err_str:<10} | {eq_str}"
+                    final_v = abs(1.0 / f_slope) * 1e6
+                    legend_label = f"OVERALL {fam:<7} | {final_v/1e8:.3f}e8 m/s"
                     z_fit_global = np.linspace(-200, 200, 200)
-                    ax.plot(z_fit_global, final_slope * z_fit_global + final_intercept, '-', color=color, linewidth=4, label=legend_label)
+                    ax1.plot(z_fit_global, f_slope * z_fit_global + f_intercept, '-', color=color, linewidth=4, label=legend_label)
 
-            legend_title = f"{'FAMILY':<15} | {'VELOCITY [m/s]':<10} | {'V_ERROR [m/s]':<10} | {'FIT EQUATION'}"
-            leg = ax.legend(loc="upper right", frameon=True, prop={'family': 'monospace', 'size': 9}, title=legend_title)
-            plt.setp(leg.get_title(), family='monospace', fontsize=9, weight='bold')
+            ax1.legend(loc="upper right", frameon=True, prop={'family': 'monospace', 'size': 9})
+            fig1.tight_layout()
+            pdf.savefig(fig1)
+            plt.close(fig1)
 
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
-            print(f"[VELOCITY] Saved Per-Channel Z vs TOA plot to: {pdf_path}")
+            # --- PAGE 2: Velocity Histograms and Gaussian Fits ---
+            fig2, ax2 = plt.subplots(figsize=(14, 10))
+            ax2.set_xlabel("Velocity [$10^8$ m/s]", fontsize=14)
+            ax2.set_ylabel("Counts (Normalized)", fontsize=14)
+            hep.cms.label(ax=ax2, exp="CaloX", data=False, llabel="Velocity Distribution", rlabel=f"{particle_type.capitalize()}")
+
+            for fam, v_data in fam_v_lists.items():
+                if len(v_data) < 3: continue # Need enough points for a histogram/fit
+                
+                v_data = np.array(v_data)
+                color = FAMILIES[fam]["color"]
+                
+                # Create histogram
+                counts, bins = np.histogram(v_data, bins=15)
+                bin_centers = 0.5 * (bins[1:] + bins[:-1])
+                
+                # Normalize counts for plotting against Gaussian
+                norm_counts = counts / np.max(counts) if np.max(counts) > 0 else counts
+                
+                # Gaussian Fit
+                try:
+                    p0 = [np.mean(v_data), np.std(v_data)]
+                    popt, _ = curve_fit(gaussian_peak_1, bin_centers, norm_counts, p0=p0)
+                    v_mu, v_sig = popt[0], abs(popt[1])
+                    
+                    x_plot = np.linspace(np.min(v_data)*0.8, np.max(v_data)*1.2, 200)
+                    y_plot = gaussian_peak_1(x_plot, v_mu, v_sig)
+                    
+                    ax2.step(bin_centers, norm_counts, where='mid', color=color, alpha=0.3)
+                    ax2.plot(x_plot, y_plot, color=color, lw=3, label=f"{fam}: $\mu$={v_mu:.3f}, $\sigma$={v_sig:.3f} [$10^8$ m/s]")
+                except:
+                    ax2.hist(v_data, bins=15, histtype='step', color=color, label=f"{fam} (Fit Failed)")
+
+            ax2.legend(loc="upper left", frameon=True)
+            fig2.tight_layout()
+            pdf.savefig(fig2)
+            plt.close(fig2)
+
+    print(f"[VELOCITY] Saved Per-Channel Z vs TOA and Gaussian fits to: {pdf_path}")
 # ================= UPDATED STATS TABLE WITH TIME_ERROR =================
 def generate_stats_table(files, outpath, tree_name, particle_type=None):
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
