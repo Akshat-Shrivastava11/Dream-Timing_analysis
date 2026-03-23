@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+
+#working on energy now
 import os
 import re
 import glob
