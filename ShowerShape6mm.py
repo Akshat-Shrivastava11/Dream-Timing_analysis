@@ -125,48 +125,64 @@ def compute_pid_mask(tree, particle_type):
     return final_mask
 
 
-# ================= 3mm MOSAIC GRIDS =================
+# ================= 6mm MOSAIC GRIDS =================
 QUARTZ_GRID = [
-    [None,  "002", None,  None],
-    ["006", "004", "206", "204"],
-    ["016", "014", "216", "214"],
-    ["026", "024", "226", "224"],
-    [None,  "030", None,  None],
-    [None,  "034", None,  None],
-    ["106", "104", "306", "304"],
-    ["116", "114", "316", "314"],
-    ["126", "124", "326", "324"],
-    [None,  "134", None,  "334"],
+    # --- Missing Top Section ---
+    
+    # --- Upper Body ---
+    [None,  None,  "617", "616", "615", "614", None,  None],
+    [None,  None,  "625", "624", "623", "622", None,  None],
+    [None,  "637", "631", "630", "627", "626", "636", None],
+    
+    # --- Main Body with 500-Series Side Wings ---
+    ["515", "514", "635", "634", "633", "632", "501", "500"],
+    [None,  None,  "002", None,  None,  None,  None,  None],
+    ["517", "516", "006", "004", "206", "204", "503", "502"],
+    [None,  None,  "016", "014", "216", "214", None,  None],
+    ["521", "520", "026", "024", "226", "224", "505", "504"],
+    [None,  None,  "030", None,  None,  None,  None,  None],
+    [None,  None,  "530", "034", "534", "234", None,  None],
+    ["523", "522", "106", "104", "306", "304", "507", "506"],
+    [None,  None,  "116", "114", "316", "314", None,  None],
+    ["525", "524", "126", "124", "326", "324", "511", "510"],
+    [None,  None,  "532", "134", "536", "334", None,  None],
+    ["527", "526", "403", "402", "401", "400", "513", "512"],
+    
+    # --- Lower Body ---
+    [None,  "437", "407", "406", "405", "404", "436", None],
+    [None,  None,  "413", "412", "411", "410", None,  None],
+    [None,  None,  "417", "416", "415", "414", None,  None],
 ]
 
 PLASTIC_GRID = [
-    [None,  "000", "202", "200"],
-    ["012", "010", "212", "210"],
-    ["022", "020", "222", "220"],
-    ["032", None,  "232", "230"],
-    ["102", "100", "302", "300"],
-    ["112", "110", "312", "310"],
-    ["122", "120", "322", "320"],
-    ["132", "130", "332", "330"],
+    # --- Top Section (Olive) ---
+    [None,  None,  "603", "602", "601", "600", None,  None],
+    [None,  None,  None,  "607", "606", None,  None,  None],
+    [None,  None,  "613", "612", "611", "610", None,  None],
+    
+    # --- Physical Gap ---
+    [None,  None,  None,  None,  None,  None,  None,  None],
+    [None,  None,  None,  None,  None,  None,  None,  None],
+    [None,  None,  None,  None,  None,  None,  None,  None],
+
+    # --- Bottom Section (Teal) ---
+    [None,  None,  "425", "424", "423", "422", None,  None],
+    [None,  None,  None,  "427", "426", None,  None,  None],
+    [None,  None,  "433", "432", "431", "430", None,  None],
 ]
 
-SCI_ALL_GRID = [
-    ["003", "001", "203", "201"],
-    ["007", "005", "207", "205"],
-    ["013", "011", "213", "211"],
-    ["017", "015", "217", "215"],
-    ["023", "021", "223", "221"],
-    ["027", "025", "227", "225"],
-    ["033", "031", "233", "231"],
-    [None,  "035", None,  "235"],
-    ["103", "101", "303", "301"],
-    ["107", "105", "307", "305"],
-    ["113", "111", "313", "311"],
-    ["117", "115", "317", "315"],
-    ["123", "121", "323", "321"],
-    ["127", "125", "327", "325"],
-    ["133", "131", "333", "331"],
-    [None,  "135", None,  "335"],
+SCI_GRID = [
+    [None,None,"605","604",None,None],
+    [None,None,None,None,None,None],
+    [None,None,"621","620",None,None],
+    [None,None,None,None,None,None],
+
+    [None,"533","135","537","335",None],
+    [None,None,None,None,None,None],
+    [None,None,None,None,None,None],
+    [None,None,"421","420",None,None],
+    [None,None,None,None,None,None],
+    [None,None,"425","434",None,None],
 ]
 
 
@@ -220,11 +236,11 @@ def _build_color_map(runlabels):
     return {rl: cmap(x) for x, rl in zip(np.linspace(0.0, 1.0, n, endpoint=False), runlabels)}
 
 
-# ================= 3MM TIMING CALCULATION =================
-def get_tfinal_3mm(tree, b, g, c, suffix):
+# ================= 6MM TIMING CALCULATION =================
+def get_tfinal_6mm(tree, b, g, c, suffix):
     """
-    Computes the raw t_final for the 3mm/6mm setup on the fly:
-    t_final(b,g,c) = ( t(b,g,c) - t(b,g,8) ) - ( t(b,3,7) - t(b,3,8) )
+    Computes the ABSOLUTE VALUE of t_final for the 6mm setup on the fly:
+    |t_final(b,g,c)| = |( t(b,g,c) - t(b,g,8) ) - ( t(0,3,7) - t(0,3,8) )|
     """
     br_sig     = f"DRS_Board{b}_Group{g}_Channel{c}{suffix}"
     br_sig_ref = f"DRS_Board{b}_Group{g}_Channel8{suffix}"
@@ -232,137 +248,23 @@ def get_tfinal_3mm(tree, b, g, c, suffix):
     br_trg_ref = f"DRS_Board0_Group3_Channel8{suffix}"
     
     keys = tree.keys()
-    if any(br not in keys for br in [br_sig, br_sig_ref, br_trg, br_trg_ref]):
-        return None
+    for br in [br_sig, br_sig_ref, br_trg, br_trg_ref]:
+        if br not in keys:
+            return None
             
     arr_sig     = tree[br_sig].array(library="np")
     arr_sig_ref = tree[br_sig_ref].array(library="np")
     arr_trg     = tree[br_trg].array(library="np")
     arr_trg_ref = tree[br_trg_ref].array(library="np")
+    
+    if not (arr_sig.shape == arr_sig_ref.shape == arr_trg.shape == arr_trg_ref.shape):
+        return None
         
-    return (arr_sig - arr_sig_ref) - (arr_trg - arr_trg_ref)
-
-
-# ================= SHOWER SHAPE WAVEFORM MOSAIC =================
-def make_waveform_pdf(files, code_str, label, xlim, outdir, tree_name, particle_type=None, n_events=9):
-    """
-    Finds the mode of LP2_50 for the given channel strictly inside the xlim window.
-    Selects the closest N events (default 9 for a 3x3 grid).
-    Plots only the main channel waveforms as individual subplots on a single page.
-    Ignores t_peak completely.
-    """
-    # Put these in a dedicated subdirectory
-    wf_dir = os.path.join(outdir, "WaveformPlots")
-    os.makedirs(wf_dir, exist_ok=True)
+    t_final = (arr_sig - arr_sig_ref) - (arr_trg - arr_trg_ref)
     
-    # Safely extract just the 3-digit code
-    clean_code = re.sub(r'[^0-9]', '', code_str)[:3]
-    b, g, c = int(clean_code[0]), int(clean_code[1]), int(clean_code[2])
-    
-    pid_tag = particle_type if particle_type else "NoPID"
-    tag = _fileset_tag(files, pid_tag)
-    
-    safe_label = label.replace(":", "").replace(" ", "_")
-    out_name = os.path.join(wf_dir, f"Waveforms_CH{clean_code}_{safe_label}_{tag}_L50.pdf")
-    
-    # Only need the main channel branches now, locked to L50
-    main_br   = f"DRS_Board{b}_Group{g}_Channel{c}"
-    timing_br = f"{main_br}_LP2_50"
-    suffix    = "_LP2_50"
-    
-    print(f"--- Processing Individual Waveforms for {label} (Ch {clean_code}) in Window: {xlim} ---")
-    
-    with PdfPages(out_name) as pdf:
-        for fpath in files:
-            rl = _run_label(fpath)
-            try:
-                with uproot.open(fpath) as f:
-                    tree = f[tree_name]
-                    pid_mask = compute_pid_mask(tree, particle_type) if particle_type else np.ones(tree.num_entries, dtype=bool)
-                    
-                    # Make sure to use the 3mm timing logic here
-                    tf_array = get_tfinal_3mm(tree, b, g, c, suffix)
-                    if tf_array is None: continue
-                    
-                    # Convert to absolute so bounds map correctly
-                    tf_array = np.abs(tf_array)
-                    
-                    # Apply constraints: Ignore t_final = 0, remove NaNs, and STRICTLY bound to xlim
-                    valid_mask = pid_mask & ~np.isnan(tf_array) & (tf_array > 0)
-                    valid_mask = valid_mask & (tf_array >= xlim[0]) & (tf_array <= xlim[1])
-                    
-                    valid_indices = np.where(valid_mask)[0]
-                    if len(valid_indices) == 0: continue
-                    
-                    # Find Mode only within the region of interest
-                    valid_tf = tf_array[valid_indices]
-                    hist, bin_edges = np.histogram(valid_tf, bins=100, range=(xlim[0], xlim[1]))
-                    mode_tf = bin_edges[np.argmax(hist)] + (bin_edges[1]-bin_edges[0])/2.0
-                    
-                    # Select closest N events to that mode
-                    diffs = np.abs(tf_array[valid_indices] - mode_tf)
-                    sorted_valid_indices = valid_indices[np.argsort(diffs)]
-                    selected_evs = sorted_valid_indices[:n_events]
-
-                    # Calculate grid dimensions dynamically (3x3 for n=9)
-                    import math
-                    cols = math.ceil(math.sqrt(n_events))
-                    rows = math.ceil(n_events / cols)
-                    
-                    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
-                    axes = np.array(axes).flatten() # Flatten so we can iterate linearly
-
-                    for idx, ev in enumerate(selected_evs):
-                        ax = axes[idx]
-                        tf_val = tf_array[ev]
-                        
-                        w = tree[main_br].array(entry_start=ev, entry_stop=ev+1, library="np")[0]
-                        timing_raw = tree[timing_br].array(entry_start=ev, entry_stop=ev+1, library="np")[0]
-                        
-                        baseline = np.mean(w[:30])
-                        # Subtract baseline and flip to make it positive
-                        w_sub = -(w - baseline) 
-                        
-                        # Convert bins to true nanoseconds
-                        time_axis = np.arange(len(w)) * 0.2
-                        
-                        ax.plot(time_axis, w_sub, color="tab:blue", lw=1.5)
-                        
-                        if not np.isnan(timing_raw):
-                            ax.axvline(x=timing_raw, color='black', linestyle='--', alpha=0.8, lw=1.5, label=f"L50: {timing_raw:.2f} ns")
-                            ax.set_xlim(timing_raw - 15, timing_raw + 25)
-                        else:
-                            ax.set_xlim(0, 200) 
-                            ax.text(0.5, 0.5, "NaN Timing", transform=ax.transAxes, ha='center', color='red', fontsize=12)
-
-                        # Clean Formatting for subplots
-                        ax.minorticks_on()
-                        ax.tick_params(axis='both', which='major', labelsize=10, direction='in', top=True, right=True)
-                        ax.set_xlabel("Time [ns]", fontsize=10)
-                        if idx % cols == 0:
-                            ax.set_ylabel("Amplitude [ADC]", fontsize=10)
-                        
-                        ax.set_title(f"Event: {ev} | $|t_{{final}}|$: {tf_val:.2f} ns", fontsize=11, pad=8)
-                        ax.legend(loc='lower right', frameon=False, fontsize=9)
-
-                    # Turn off any empty subplots if n_events doesn't perfectly fill the grid
-                    for idx in range(len(selected_evs), len(axes)):
-                        axes[idx].axis('off')
-
-                    fig.suptitle(f"$\mathbf{{CaloX}}$ {label} (Ch {clean_code}) | Closest {len(selected_evs)} events to mode", 
-                                 fontsize=16, fontweight='bold', y=0.98)
-                    
-                    plt.tight_layout(rect=[0, 0, 1, 0.96])
-                    pdf.savefig(fig)
-                    plt.close(fig)
-
-            except Exception as e:
-                print(f"Failed extracting waveforms from {fpath}: {e}")
-
-    print(f"Saved Waveforms to: {out_name}")
+    return np.abs(t_final)
 
 
-# ================= SHOWER SHAPE WAVEFORM MOSAIC =================
 # ================= SHOWER SHAPE WAVEFORM MOSAIC =================
 def make_waveform_pdf(files, code_str, label, xlim, outdir, tree_name, particle_type=None, n_events=200):
     """
@@ -400,10 +302,9 @@ def make_waveform_pdf(files, code_str, label, xlim, outdir, tree_name, particle_
                     tree = f[tree_name]
                     pid_mask = compute_pid_mask(tree, particle_type) if particle_type else np.ones(tree.num_entries, dtype=bool)
                     
-                    tf_array = get_tfinal_3mm(tree, b, g, c, suffix)
+                    # 6MM TIMING LOGIC
+                    tf_array = get_tfinal_6mm(tree, b, g, c, suffix)
                     if tf_array is None: continue
-                    
-                    tf_array = np.abs(tf_array)
                     
                     # Apply constraints
                     valid_mask = pid_mask & ~np.isnan(tf_array) & (tf_array > 0)
@@ -425,8 +326,8 @@ def make_waveform_pdf(files, code_str, label, xlim, outdir, tree_name, particle_
                         
                         baseline = np.mean(w[:30])
                         
-                        # REMOVED the negative sign here! It will now stay positive.
-                        w_sub = w - baseline 
+                        # Positive Waveform
+                        w_sub = -(w - baseline)
                         
                         time_axis = np.arange(len(w)) * 0.2
                         
@@ -454,9 +355,11 @@ def make_waveform_pdf(files, code_str, label, xlim, outdir, tree_name, particle_
             except Exception as e:
                 print(f"Failed extracting waveforms from {fpath}: {e}")
                 
-        plt.close(fig) # Close the master figure once done with all files
+        plt.close(fig)
 
     print(f"Saved Waveforms to: {out_name}")
+
+
 # ================= HISTOGRAM MOSAIC OVERLAY =================
 def make_mosaic_hist_overlay(files, grid, label, xlim, outdir, tree_name, nbins, cut_min, min_entries, min_raw, suffix, particle_type=None):
     os.makedirs(outdir, exist_ok=True)
@@ -512,12 +415,9 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir, tree_name, nbins,
             items = []
             for (_, _, tree, keys, rl, pid_mask) in opened:
                 try:
-                    # USE NEW 3MM TIMING CALC
-                    arr = get_tfinal_3mm(tree, b, g, ch, suffix)
+                    # 6MM TIMING LOGIC
+                    arr = get_tfinal_6mm(tree, b, g, ch, suffix)
                     if arr is None: continue
-                    
-                    # Convert to Absolute value so it maps nicely to the positive xlims
-                    arr = np.abs(arr)
                     
                     combined_mask = pid_mask if pid_mask is not None else np.ones(tree.num_entries, dtype=bool)
 
@@ -624,13 +524,14 @@ def make_mosaic_hist_overlay(files, grid, label, xlim, outdir, tree_name, nbins,
 
     print("Saved Hist Mosaic:", out)
 
-# ================= MAIN =================
+
 # ================= MAIN =================
 def main():
     ap = argparse.ArgumentParser()
     
     ap.add_argument("--ana-files", nargs="+", 
-                    default=["/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1436_250926233134_converted_timingskim.root"],
+                    default=["/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1474_250927193729_converted_timingskim.root" 
+                        "/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1475_250927200644_converted_timingskim.root"],
                     help="Explicit list of input ROOT files.")
     ap.add_argument("--ana-glob", default=None, help="Glob for input ROOT files.")
     ap.add_argument("--run-min", type=int, default=None, help="Keep only runs >= run-min")
@@ -639,10 +540,10 @@ def main():
     ap.add_argument("--tree", default=TREE_NAME, help="Tree name")
     
     # Locked to Showershape directory
-    ap.add_argument("--outdir", default="./Showershape", help="Output directory")
+    ap.add_argument("--outdir", default="./Showershape/6mm/", help="Output directory")
 
-    ap.add_argument("--xmin", type=float, default=12.0, help="Min |tfinal|")
-    ap.add_argument("--xmax", type=float, default=15.0, help="Max |tfinal|")
+    ap.add_argument("--xmin", type=float, default=9.0, help="Min |tfinal|")
+    ap.add_argument("--xmax", type=float, default=13.0, help="Max |tfinal|")
     ap.add_argument("--nbins", type=int, default=NBINS, help="Histogram bins")
     ap.add_argument("--cut-min", type=float, default=CUT_MIN, help="Ignore |tfinal| < cut-min")
     ap.add_argument("--min-entries", type=int, default=MIN_ENTRIES, help="Min entries after cuts")
@@ -665,16 +566,18 @@ def main():
     # Strictly using L50, absolutely no t_peak
     suffixes = ["_LP2_50"]
     
-    # Bundle the 3MM Grids
+    # Bundle the 6MM Grids
     grids = {
-        "3MM-Quartz": QUARTZ_GRID,
-        "3MM-Plastic": PLASTIC_GRID,
-        "3MM-Sci": SCI_ALL_GRID
+        "6MM-Quartz": QUARTZ_GRID,
+        "6MM-Plastic": PLASTIC_GRID,
+        "6MM-Sci": SCI_GRID
     }
-
     
-    # 1. Plot the 3x3 Individual Waveform grids ONLY for the targeted channels
-    target_channels = ["030", "222", "230", "224"]
+    # 1. Plot the Individual Waveform grids ONLY for the targeted channels
+    target_channels = ["617", "616", "615", "614",
+                       "603", "602", "601", "600",
+                       "605","604",
+                       ]
     print(f"\n--- Extracting Waveforms for Target Channels: {target_channels} ---")
     
     for code in target_channels:
@@ -682,11 +585,12 @@ def main():
             b, g, c = _parse_code(code)
             if _base_ok(g, c):
                 make_waveform_pdf(
-                    files, code, f"3MM-Target_{code}", xlim, args.outdir, 
+                    files, code, f"6MM-Target_{code}", xlim, args.outdir, 
                     args.tree, args.pid, n_events=200
                 )
         except Exception as e:
             print(f"[WARN] Skipping code {code}: {e}")
+            
     # 2. Make the t_final histogram mosaics for the full grids
     for name, grid in grids.items():
         for suffix in suffixes:

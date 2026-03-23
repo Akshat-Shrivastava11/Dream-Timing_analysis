@@ -660,38 +660,17 @@ def _resolve_files(args):
 
     return sorted(files, key=_sort_key)
 
-# ================= VELOCITY & STATS PLOTTING =================
-# def style_paper_axes(ax, xlabel, ylabel, particle_type):
-#     ax.set_xlabel(xlabel, loc='right', fontsize=14, fontweight='bold')
-#     ax.set_ylabel(ylabel, loc='top', fontsize=14, fontweight='bold')
-    
-#     ax.xaxis.set_minor_locator(AutoMinorLocator())
-#     ax.yaxis.set_minor_locator(AutoMinorLocator())
-#     ax.tick_params(which='both', direction='in', top=True, right=True, labelsize=12)
-#     ax.tick_params(which='major', length=8)
-#     ax.tick_params(which='minor', length=4)
-    
-#     display_name = "Positron" if particle_type.lower() == "electron" else particle_type.capitalize()
-    
-#     # Wrapped the trailing text in \\mathbf{{ }} and used \\ to preserve spaces
-#     header_text = r"$\mathbf{CaloX}$ $\mathit{Data}$" + f"  $\\mathbf{{40\ GeV\ {display_name}}}$"
-    
-#     ax.text(0.0, 1.02, header_text, transform=ax.transAxes, fontsize=16, va='bottom', ha='left', color='black')
-
 
 def style_paper_axes(ax, xlabel, ylabel, particle_type):
-    #ax.set_xlabel(xlabel)
+    ax.set_xlabel(xlabel)
     ax.set_xlim(-190, 190)
     ax.set_ylabel(ylabel)
     
     display_name = "Positron" if particle_type.lower() == "electron" else particle_type.capitalize()
-    
-    # --- USE MPLHEP FOR THE HEADER ---
     right_label = f"40 GeV {display_name}"
     
-    # Adding llabel="Data" ensures it prints "CaloX Data"
-    hep.cms.label(ax=ax, exp="CaloX", llabel="Data", data=True, rlabel=right_label)
-
+    # Set data=False to prevent mplhep from overriding your custom text
+    hep.cms.label(ax=ax, exp="CaloX", data=False, llabel="Z-scan", rlabel=right_label)
 # ================= UPDATED VELOCITY PLOT WITH FIT ERRORS & 10^8 =================
 def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
     outdir = os.path.dirname(txt_path)
@@ -709,12 +688,30 @@ def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
             # INCREASED SIZE HERE
             fig, ax = plt.subplots(figsize=(14, 10))
             style_paper_axes(ax, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
-            
-            for fam, data in plot_data.items():
-                if not data["z"]: continue
-                z_arr, mu_arr, sig_mean_arr = np.array(data["z"]), np.array(data["mu"]), np.array(data["sig"])
+
+
+            for fam, channels_dict in plot_data.items():
+                # --- FIX STARTS HERE: Flatten the channel data into family data ---
+                combined_z = []
+                combined_mu = []
+                combined_sig = []
+                
+                for ch, data in channels_dict.items():
+                    combined_z.extend(data["z"])
+                    combined_mu.extend(data["mu"])
+                    combined_sig.extend(data["sig"])
+                    
+                if not combined_z: 
+                    continue
+                    
+                z_arr = np.array(combined_z)
+                mu_arr = np.array(combined_mu)
+                sig_mean_arr = np.array(combined_sig)
+                # --- FIX ENDS HERE ---
+
                 color = FAMILIES[fam]["color"]
                 
+                # Now the rest of your fitting logic works on the flattened arrays
                 weights = 1.0 / sig_mean_arr
                 params, cov = np.polyfit(z_arr, mu_arr, 1, w=weights, cov=True)
                 slope, intercept = params[0], params[1]
@@ -735,7 +732,8 @@ def create_z_toa_plot(plot_data, txt_path, pid_label, particle_type):
                 legend_label = f"{fam:<10} | {v_str:<15} | {v_err_str:<15} | {eq_str}"
                 
                 z_fit = np.linspace(min(z_arr) - 20, 400, 200)
-                ax.errorbar(z_arr, mu_arr, yerr=sig_mean_arr, fmt='o', color=color, capsize=2, markersize=2, elinewidth=1)
+                #ax.errorbar(z_arr, mu_arr, yerr=sig_mean_arr, fmt='o', color=color, capsize=2, markersize=2, elinewidth=1)
+                ax.errorbar(z_arr, mu_arr, yerr=sig_mean_arr, fmt='o', color=color, capsize=3, markersize=6, elinewidth=2)
                 ax.plot(z_fit, slope * z_fit + intercept, '-', color=color, linewidth=2, label=legend_label)
 
             legend_title = f"{'FAMILY':<10} | {'VELOCITY [m/s]':<15} | {'V_ERROR [m/s]':<15} | {'FIT EQUATION'}"
@@ -851,7 +849,8 @@ def create_shared_intercept_plot(plot_data, txt_path, pid_label, particle_type):
                 legend_label = f"{fam:<10} | {v_str:<15} | {v_err_str:<15} | {eq_str}"
 
                 z_fit = np.linspace(min(all_z) - 20, max(all_z) + 20, 200)
-                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=FAMILIES[fam]["color"],  capsize=2, markersize=2, elinewidth=1)
+                #ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=FAMILIES[fam]["color"],  capsize=2, markersize=2, elinewidth=1)
+                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='o', color=FAMILIES[fam]["color"], capsize=3, markersize=6, elinewidth=2)
                 ax.plot(z_fit, m * z_fit + b, '-', color=FAMILIES[fam]["color"], lw=2, label=legend_label)
 
             legend_title = (
@@ -874,6 +873,115 @@ def create_shared_intercept_plot(plot_data, txt_path, pid_label, particle_type):
             plt.close(fig)
             print(f"[SHARED FIT] Saved Shared Intercept plot to: {pdf_path}")
 
+
+def create_channel_velocity_plots(plot_data, txt_path, pid_label, particle_type):
+    outdir = os.path.dirname(txt_path)
+    pdf_path = os.path.join(outdir, f"Z_vs_TOA_PerChannelFits_{pid_label}.pdf")
+    
+    print("\n[VELOCITY] --------------------------------------------------------")
+    print(f"[VELOCITY] Calculating Per-Channel Velocity Fits (PID: {pid_label})")
+    
+    # Store all individual velocities per family for the histogramming step
+    fam_v_lists = {fam: [] for fam in FAMILIES.keys()}
+    
+    with open(txt_path, "a") as f_out:
+        f_out.write("\n" + "=" * 120 + "\n")
+        f_out.write(f"{'FAMILY':<10} | {'CHANNEL':<7} | {'VELOCITY [m/s]':<15} | {'V_ERROR [m/s]':<15} | {'FIT EQUATION'}\n")
+        f_out.write("=" * 120 + "\n")
+        
+        with PdfPages(pdf_path) as pdf:
+            # --- PAGE 1: Scatter plot of Z vs TOA (Linear Fits) ---
+            fig1, ax1 = plt.subplots(figsize=(14, 10))
+            style_paper_axes(ax1, "Z Position [mm]", "Time of Arrival Mean [ns]", particle_type)
+            
+            for fam, channels_dict in plot_data.items():
+                color = FAMILIES[fam]["color"]
+                fam_slopes, fam_slope_errs, fam_intercepts, fam_intercept_weights = [], [], [], []
+                
+                for ch, data in channels_dict.items():
+                    if len(data["z"]) < 2: continue
+                    z_arr, mu_arr, sig_arr = np.array(data["z"]), np.array(data["mu"]), np.array(data["sig"])
+                    weights = 1.0 / sig_arr
+                    
+                    try:
+                        params, cov = np.polyfit(z_arr, mu_arr, 1, w=weights, cov='unscaled')
+                    except: continue
+                        
+                    slope, intercept = params[0], params[1]
+                    slope_err = np.sqrt(cov[0,0])
+                    
+                    # Store variables for overall weighted avg
+                    fam_slopes.append(slope)
+                    fam_slope_errs.append(slope_err)
+                    fam_intercepts.append(intercept)
+                    fam_intercept_weights.append(1.0 / np.sqrt(cov[1,1]))
+                    
+                    # Calculate velocity and store for histogram
+                    v = abs(1.0 / slope) * 1e6 if slope != 0 else 0
+                    fam_v_lists[fam].append(v / 1e8) # Storing in units of 10^8 m/s
+                    
+                    v_err = (v**2) * (slope_err * 1e-6) if slope != 0 else 0
+                    f_out.write(f"{fam:<10} | {ch:<7} | {v/1e8:.4f}e8      | {v_err/1e8:.4f}e8      | t = ({slope:.4f})z {'+' if intercept >= 0 else '-'} {abs(intercept):.2f}\n")
+                    
+                    # Plot thin lines
+                    ax1.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt='none', ecolor=color, alpha=0.3, capsize=3)
+                    ax1.plot(z_arr, mu_arr, marker='o', color=color, alpha=0.3, markersize=6, linestyle='none')
+                
+                if len(fam_slopes) > 0:
+                    w_slope = 1.0 / (np.array(fam_slope_errs)**2)
+                    f_slope = np.sum(np.array(fam_slopes) * w_slope) / np.sum(w_slope)
+                    f_slope_err = np.sqrt(1.0 / np.sum(w_slope))
+                    f_intercept = np.average(fam_intercepts, weights=fam_intercept_weights)
+                    
+                    final_v = abs(1.0 / f_slope) * 1e6
+                    legend_label = f"OVERALL {fam:<7} | {final_v/1e8:.3f}e8 m/s"
+                    z_fit_global = np.linspace(-200, 200, 200)
+                    ax1.plot(z_fit_global, f_slope * z_fit_global + f_intercept, '-', color=color, linewidth=4, label=legend_label)
+
+            ax1.legend(loc="upper right", frameon=True, prop={'family': 'monospace', 'size': 9})
+            fig1.tight_layout()
+            pdf.savefig(fig1)
+            plt.close(fig1)
+
+            # --- PAGE 2: Velocity Histograms and Gaussian Fits ---
+            fig2, ax2 = plt.subplots(figsize=(14, 10))
+            ax2.set_xlabel("Velocity [$10^8$ m/s]", fontsize=14)
+            ax2.set_ylabel("Counts (Normalized)", fontsize=14)
+            hep.cms.label(ax=ax2, exp="CaloX", data=False, llabel="Velocity Distribution", rlabel=f"{particle_type.capitalize()}")
+
+            for fam, v_data in fam_v_lists.items():
+                if len(v_data) < 3: continue # Need enough points for a histogram/fit
+                
+                v_data = np.array(v_data)
+                color = FAMILIES[fam]["color"]
+                
+                # Create histogram
+                counts, bins = np.histogram(v_data, bins=15)
+                bin_centers = 0.5 * (bins[1:] + bins[:-1])
+                
+                # Normalize counts for plotting against Gaussian
+                norm_counts = counts / np.max(counts) if np.max(counts) > 0 else counts
+                
+                # Gaussian Fit
+                try:
+                    p0 = [np.mean(v_data), np.std(v_data)]
+                    popt, _ = curve_fit(gaussian_peak_1, bin_centers, norm_counts, p0=p0)
+                    v_mu, v_sig = popt[0], abs(popt[1])
+                    
+                    x_plot = np.linspace(np.min(v_data)*0.8, np.max(v_data)*1.2, 200)
+                    y_plot = gaussian_peak_1(x_plot, v_mu, v_sig)
+                    
+                    ax2.step(bin_centers, norm_counts, where='mid', color=color, alpha=0.3)
+                    ax2.plot(x_plot, y_plot, color=color, lw=3, label=f"{fam}: $\mu$={v_mu:.3f}, $\sigma$={v_sig:.3f} [$10^8$ m/s]")
+                except:
+                    ax2.hist(v_data, bins=15, histtype='step', color=color, label=f"{fam} (Fit Failed)")
+
+            ax2.legend(loc="upper left", frameon=True)
+            fig2.tight_layout()
+            pdf.savefig(fig2)
+            plt.close(fig2)
+
+    print(f"[VELOCITY] Saved Per-Channel Z vs TOA and Gaussian fits to: {pdf_path}")
 # ================= UPDATED STATS TABLE WITH TIME_ERROR =================
 def generate_stats_table(files, outpath, tree_name, particle_type=None):
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
@@ -881,7 +989,9 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
     header_fmt = "{:<10} | {:<10} | {:<10} | {:<8} | {:<12} | {:<12} | {:<12} | {:<12} | {:<10}"
     row_fmt    = "{:<10} | {:<10.1f} | {:<10} | {:<8} | {:<12.4f} | {:<12.4f} | {:<12.4f} | {:<12.4f} | {:<10}"
     
-    plot_data = {fam: {"z": [], "mu": [], "sig": []} for fam in FAMILIES.keys()}
+    #plot_data = {fam: {"z": [], "mu": [], "sig": []} for fam in FAMILIES.keys()}
+    # Now nested: plot_data[family][channel] = {"z": [], "mu": [], "sig": []}
+    plot_data = {fam: {} for fam in FAMILIES.keys()}
     
     with open(outpath, "w") as f_out:
         f_out.write("=" * 120 + "\n")
@@ -936,6 +1046,15 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
                     except: 
                         fit_mu, fit_sig = mode, float(arr_time.std())
 
+                    # ==========================================================
+                    # NEW CUT: Ignore SCI outlier channels with unphysical low sigma
+                    # ==========================================================
+                    if family_name == "SCI" and fit_sig < 0.050:
+                        # Optional: print statement so you know which ones got dropped
+                        print(f"        [SKIP] Ch {code_str} (SCI): Sigma too low ({fit_sig:.4f} < 0.050 ns)")
+                        continue
+                    # ==========================================================
+
                     # Statistical precision calculation
                     time_err = fit_sig / np.sqrt(n_final)
 
@@ -945,16 +1064,21 @@ def generate_stats_table(files, outpath, tree_name, particle_type=None):
                         fit_mu, fit_sig, time_err, 2.355 * fit_sig, n_final
                     ) + "\n")
                     
+                    # NEW DATA APPENDING LOGIC: Save by specific channel
                     if z_pos != -999.0:
-                        plot_data[family_name]["z"].append(z_pos)
-                        plot_data[family_name]["mu"].append(fit_mu)
-                        plot_data[family_name]["sig"].append(time_err) # Use SE for the plot weights
+                        if code_str not in plot_data[family_name]:
+                            plot_data[family_name][code_str] = {"z": [], "mu": [], "sig": []}
+                        
+                        plot_data[family_name][code_str]["z"].append(z_pos)
+                        plot_data[family_name][code_str]["mu"].append(fit_mu)
+                        plot_data[family_name][code_str]["sig"].append(time_err)
             uf.close()
     
     pid_label = f"PID_{particle_type}" if particle_type else "AllParticles"
+    create_channel_velocity_plots(plot_data, outpath, pid_label, particle_type)
     create_z_toa_plot(plot_data, outpath, pid_label, particle_type)
     # 2. Shared Intercept plot (Combined Cherenkov fit)
-    create_shared_intercept_plot(plot_data, outpath, pid_label, particle_type)
+    #create_shared_intercept_plot(plot_data, outpath, pid_label, particle_type)
     
     print("All done.")
 
