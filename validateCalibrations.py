@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import json
 import argparse
 import numpy as np
@@ -9,6 +10,8 @@ from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import mplhep as hep
+import matplotlib.patheffects as pe
+
 
 # Apply CMS style for publication-quality plots
 plt.style.use(hep.style.CMS)
@@ -166,6 +169,30 @@ def get_run_group(path: str) -> str:
             return y_group
     raise ValueError(f"Run {base} is not in RUN_MAP!")
 
+def get_z_position(run_label):
+    if "run1513" in run_label:
+        if "192918" in run_label: return -54.5
+        if "194230" in run_label: return -400.3
+    match = re.search(r"run(\d+)", run_label)
+    run_num = int(match.group(1)) if match else None
+    
+    z_map = {
+        # y1065 runs
+        1501: -168.0, 1507: -218.0, 1511: -268.0,
+        
+        # y936 runs
+        1504: -168.0, 1509: -218.0, 1512: -268.0,
+        
+        # y1000 runs
+        1502: -168.0,  
+        1508: -218.0,  
+        
+        # y1028 runs
+        1506: -168.0,  
+        1510: -218.0   
+    }
+    return z_map.get(run_num, -999.0)
+
 def compute_adc_mask(tree, b, g, c):
     drs_br = f"DRS_Board{b}_Group{g}_Channel{c}"
     if drs_br not in tree:
@@ -225,15 +252,25 @@ def fit_mode(arr, bins, window=0.5):
         return x0
 
 # ================= PLOTTING CORE =================
-def plot_family_mosaic(tree, shifts_dict, y_group, test_label, outdir):
-    pdf_path = os.path.join(outdir, f"Mosaic_Test_{test_label}_y{y_group}.pdf")
+def plot_family_mosaic_by_z(file_list, shifts_dict, z_pos, outdir):
+    # Prepare titles and dynamic bounds based on all files being mapped
+    run_names = [re.search(r"(run\d+)", os.path.basename(f)).group(1) for f in file_list if re.search(r"(run\d+)", f)]
+    runs_str = ", ".join(sorted(set(run_names)))
+    
+    pdf_path = os.path.join(outdir, f"Mosaic_Z_{z_pos}mm.pdf")
+    y_groups = [get_run_group(f) for f in file_list]
+    
+    # Pre-open trees to avoid excessive IO for every channel loop
+    trees = [uproot.open(f)[TREE_NAME] for f in file_list]
     
     with PdfPages(pdf_path) as pdf:
         for fam, grid in FAMILIES.items():
             print(f"  -> Generating mosaic for {fam}...")
             
-            tmin = Y_CONFIGS[y_group][fam]["tmin"]
-            tmax = Y_CONFIGS[y_group][fam]["tmax"]
+            # Since files might have different Y configurations, combine the bounds dynamically
+            tmin = min(Y_CONFIGS[yg][fam]["tmin"] for yg in y_groups)
+            tmax = max(Y_CONFIGS[yg][fam]["tmax"] for yg in y_groups)
+            
             xlim = (tmin, tmax)
             bins = np.linspace(tmin, tmax, NBINS + 1)
             centers = 0.5 * (bins[1:] + bins[:-1])
@@ -244,9 +281,11 @@ def plot_family_mosaic(tree, shifts_dict, y_group, test_label, outdir):
             fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 2.8, nrows * 2.2), sharex=True)
             if nrows == 1: axes = np.atleast_2d(axes)
 
-            fig.suptitle(f"{fam} Family | Test Run: {test_label} | Bounds: [{tmin}, {tmax}]\nBlue = Pre-Calib | Orange = Post-Calib", 
+            fig.suptitle(f"{fam} Family | Z = {z_pos} mm | Runs: {runs_str}\nBounds: [{tmin}, {tmax}] | Blue = Pre-Calib | Orange = Post-Calib", 
                          fontsize=24, fontweight='bold', y=0.98)
-
+            # Arrays to store modes for the heatmap
+            heatmap_pre = np.full((nrows, ncols), np.nan)
+            heatmap_post = np.full((nrows, ncols), np.nan)
             for r, row in enumerate(grid):
                 for c in range(ncols):
                     ax = axes[r, c]
@@ -256,18 +295,25 @@ def plot_family_mosaic(tree, shifts_dict, y_group, test_label, outdir):
                         ax.axis('off')
                         continue
 
-                    # Load and cut data
                     b_drs, g_drs, c_drs = _parse_code(code)
-                    raw_arr = compute_tfinal(tree, code)
+                    combined_raw = []
                     
-                    if raw_arr is None:
+                    # Extract and concatenate data across all trees for this specific channel
+                    for tree in trees:
+                        raw_arr = compute_tfinal(tree, code)
+                        if raw_arr is None: continue
+                        
+                        adc_mask = compute_adc_mask(tree, b_drs, g_drs, c_drs)
+                        valid_raw = raw_arr[adc_mask]
+                        valid_raw = valid_raw[~np.isnan(valid_raw)]
+                        combined_raw.append(valid_raw)
+                        
+                    if not combined_raw:
                         ax.text(0.5, 0.5, f"{code}\n(No Data)", ha='center', va='center', fontsize=10, alpha=0.5)
                         ax.axis('off')
                         continue
-
-                    adc_mask = compute_adc_mask(tree, b_drs, g_drs, c_drs)
-                    raw_arr = raw_arr[adc_mask]
-                    raw_arr = raw_arr[~np.isnan(raw_arr)]
+                        
+                    raw_arr = np.concatenate(combined_raw)
                     
                     # Apply bounds limits for plotting
                     raw_arr_cut = raw_arr[(raw_arr >= tmin) & (raw_arr <= tmax)]
@@ -287,7 +333,9 @@ def plot_family_mosaic(tree, shifts_dict, y_group, test_label, outdir):
                     
                     mode_raw = fit_mode(raw_arr, bins)
                     mode_shifted = fit_mode(shifted_arr, bins)
-
+                    # Store for heatmap
+                    heatmap_pre[r, c] = mode_raw
+                    heatmap_post[r, c] = mode_shifted
                     # Plotting
                     ax.step(centers, h_raw, where='mid', lw=1.5, alpha=0.7, color='tab:blue', label='Pre')
                     ax.step(centers, h_shifted, where='mid', lw=2.0, alpha=0.85, color='tab:orange', label='Post')
@@ -314,6 +362,51 @@ def plot_family_mosaic(tree, shifts_dict, y_group, test_label, outdir):
             fig.subplots_adjust(hspace=0.4, wspace=0.3)
             pdf.savefig(fig)
             plt.close(fig)
+
+
+            # --- 2. HEATMAP PLOT ---
+            fig_heat, axes_heat = plt.subplots(1, 2, figsize=(14, max(8, nrows * 0.4)))
+            fig_heat.suptitle(f"{fam} T.O.A. Modes Heatmap | Z = {z_pos} mm", fontsize=20, fontweight='bold', y=0.98)
+            
+            # Using viridis colormap, treating NaNs as transparent/background
+            cmap = plt.cm.viridis.copy()
+            cmap.set_bad(color='white')
+
+            im0 = axes_heat[0].imshow(heatmap_pre, cmap=cmap)
+            axes_heat[0].set_title("Pre-Calib Mode [ns]", fontsize=16)
+            fig_heat.colorbar(im0, ax=axes_heat[0], fraction=0.046, pad=0.04)
+            
+            im1 = axes_heat[1].imshow(heatmap_post, cmap=cmap)
+            axes_heat[1].set_title("Post-Calib Mode [ns]", fontsize=16)
+            fig_heat.colorbar(im1, ax=axes_heat[1], fraction=0.046, pad=0.04)
+
+            # Overlay channel names and exact values
+            txt_path_effect = [pe.withStroke(linewidth=1.5, foreground="black")]
+            for r_idx in range(nrows):
+                for c_idx in range(ncols):
+                    code = grid[r_idx][c_idx] if c_idx < len(grid[r_idx]) else None
+                    if code is not None:
+                        val_pre = heatmap_pre[r_idx, c_idx]
+                        val_post = heatmap_post[r_idx, c_idx]
+                        
+                        txt_pre = f"{code}\n{val_pre:.2f}" if not np.isnan(val_pre) else f"{code}\nN/A"
+                        txt_post = f"{code}\n{val_post:.2f}" if not np.isnan(val_post) else f"{code}\nN/A"
+                        
+                        axes_heat[0].text(c_idx, r_idx, txt_pre, ha='center', va='center', fontsize=9, 
+                                          color='white', path_effects=txt_path_effect)
+                        axes_heat[1].text(c_idx, r_idx, txt_post, ha='center', va='center', fontsize=9, 
+                                          color='white', path_effects=txt_path_effect)
+
+            axes_heat[0].axis('off')
+            axes_heat[1].axis('off')
+
+            plt.tight_layout(rect=[0, 0, 1, 0.95])
+            pdf.savefig(fig_heat)
+            plt.close(fig_heat)
+            
+    # Clean up ROOT files
+    for tree in trees:
+        tree.file.close()
 
     print(f"Saved mosaic PDF to: {pdf_path}")
 
@@ -351,18 +444,22 @@ def main():
 
     print(f"Found {len(valid_files)} matching runs in {args.test_dir}.")
 
+    # Group files by their Z position
+    files_by_z = {}
     for fpath in valid_files:
-        test_label = os.path.basename(fpath).split('_')[0]
+        run_label = os.path.basename(fpath)
+        z_pos = get_z_position(run_label)
+        if z_pos not in files_by_z:
+            files_by_z[z_pos] = []
+        files_by_z[z_pos].append(fpath)
+
+    # Process files grouped by Z position
+    for z_pos, file_list in files_by_z.items():
+        print(f"\nProcessing Z Position: {z_pos} mm (Contains {len(file_list)} runs)")
         try:
-            y_group = get_run_group(fpath)
-            print(f"\nProcessing Test Run: {test_label} (Mapped to {y_group})")
-            
-            with uproot.open(fpath) as uf:
-                tree = uf[TREE_NAME]
-                plot_family_mosaic(tree, shifts, y_group, test_label, args.outdir)
-                
+            plot_family_mosaic_by_z(file_list, shifts, z_pos, args.outdir)
         except Exception as e:
-            print(f"[ERROR] Failed plotting for {fpath}: {e}")
+            print(f"[ERROR] Failed plotting for Z = {z_pos}: {e}")
 
 if __name__ == "__main__":
     main()
