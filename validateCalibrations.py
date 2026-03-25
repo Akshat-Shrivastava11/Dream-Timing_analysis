@@ -105,7 +105,6 @@ SCI_GRID = [
     [None,None,None,None,None,None],
     [None,None,"621","620",None,None],
     [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
     [None,"003","001","203","201",None],
     [None,"007","005","207","205",None],
     [None,"013","011","213","211",None],
@@ -123,7 +122,6 @@ SCI_GRID = [
     [None,"133","131","333","331",None],
     [None,"533","135","537","335",None],
     [None,None,None,None,None,None],
-    [None,None,None,None,None,None],
     [None,None,"421","420",None,None],
     [None,None,None,None,None,None],
     [None,None,"425","434",None,None],
@@ -135,16 +133,14 @@ PLASTIC_GRID = [
     [None,  None,  "613", "612", "611", "610", None,  None],
     [None,  None,  None,  None,  None,  None,  None,  None],
     [None,  None,  None,  None,  None,  None,  None,  None],
-    [None,  None,  None,  None,  None,  None,  None,  None],
-    [None,  "000", "202", "200"],
-    ["012", "010", "212", "210"],
-    ["022", "020", "222", "220"],
-    ["032", None,  "232", "230"],
-    ["102", "100", "302", "300"],
-    ["112", "110", "312", "310"],
-    ["122", "120", "322", "320"],
-    ["132", "130", "332", "330"],
-    [None,  None,  None,  None,  None,  None,  None,  None],
+    [None,  None,  None,  "000", "202", "200", None,  None,],
+    [None,  None,  "012", "010", "212", "210", None,  None,],
+    [None,  None,  "022", "020", "222", "220", None,  None,],
+    [None,  None, "032", None,  "232", "230" ,None,  None,],
+    [None,  None, "102", "100", "302", "300", None,  None,],
+    [None,  None, "112", "110", "312", "310", None,  None,],
+    [None,  None, "122", "120", "322", "320", None,  None,],
+    [None,  None, "132", "130", "332", "330", None,  None,],
     [None,  None,  None,  None,  None,  None,  None,  None],
     [None,  None,  None,  None,  None,  None,  None,  None],
     [None,  None,  "425", "424", "423", "422", None,  None],
@@ -257,7 +253,7 @@ def plot_family_mosaic_by_z(file_list, shifts_dict, z_pos, outdir):
     run_names = [re.search(r"(run\d+)", os.path.basename(f)).group(1) for f in file_list if re.search(r"(run\d+)", f)]
     runs_str = ", ".join(sorted(set(run_names)))
     
-    pdf_path = os.path.join(outdir, f"Mosaic_Z_{z_pos}mm.pdf")
+    pdf_path = os.path.join(outdir, f"Mosaic_Z_{z_pos}mm_best.pdf")
     y_groups = [get_run_group(f) for f in file_list]
     
     # Pre-open trees to avoid excessive IO for every channel loop
@@ -414,7 +410,8 @@ def plot_family_mosaic_by_z(file_list, shifts_dict, z_pos, outdir):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--test_dir", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples", help="Directory with ROOT files")
-    ap.add_argument("--json", default="/lustre/research/hep/akshriva/Dream-Timing/Calib_output/master_3mm_6mm_shifts.json", help="Path to JSON")
+    #ap.add_argument("--json", default="/lustre/research/hep/akshriva/Dream-Timing/Calib_output/master_3mm_6mm_shifts.json", help="Path to JSON")
+    ap.add_argument("--json", default="/lustre/research/hep/akshriva/Dream-Timing/Calib_output/master_3mm_6mm_shifts_global_best.json", help="Path to JSON")
     ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/Calib_output", help="Output directory")
     args = ap.parse_args()
 
