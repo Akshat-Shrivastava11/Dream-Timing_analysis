@@ -64,15 +64,15 @@ Y_CONFIGS = {
     "y1065": {
         "CER-Plastic": {"tmin": -14.5, "tmax": -11.5},
         "CER-Quartz":  {"tmin": -15.0, "tmax": -11.5},
-        "SCI":         {"tmin": -13.5, "tmax": -9.5}
+        "SCI":         {"tmin": -13.5, "tmax": -7.5}
     },
     "y936": {
-        "SCI":         {"tmin": -11.0, "tmax": -8.0},
+        "SCI":         {"tmin": -11.0, "tmax": -7.5},
         "CER-Plastic": {"tmin": -12.5, "tmax": -11.0},
         "CER-Quartz":  {"tmin": -12.6, "tmax": -11.0}
     },
     "y1028": {
-        "SCI":         {"tmin": -10.5, "tmax": -7.0},
+        "SCI":         {"tmin": -10.5, "tmax": -7.5},
         "CER-Plastic": {"tmin": -12.5, "tmax": -10.5},
         "CER-Quartz":  {"tmin": -12.5, "tmax": -11.0}
     }
@@ -253,7 +253,7 @@ def plot_family_mosaic_by_z(file_list, shifts_dict, z_pos, outdir):
     run_names = [re.search(r"(run\d+)", os.path.basename(f)).group(1) for f in file_list if re.search(r"(run\d+)", f)]
     runs_str = ", ".join(sorted(set(run_names)))
     
-    pdf_path = os.path.join(outdir, f"Mosaic_Z_{z_pos}mm_best.pdf")
+    pdf_path = os.path.join(outdir, f"Mosaic_Z_{z_pos}mm_bestbyhand.pdf")
     y_groups = [get_run_group(f) for f in file_list]
     
     # Pre-open trees to avoid excessive IO for every channel loop
@@ -411,7 +411,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--test_dir", default="/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples", help="Directory with ROOT files")
     #ap.add_argument("--json", default="/lustre/research/hep/akshriva/Dream-Timing/Calib_output/master_3mm_6mm_shifts.json", help="Path to JSON")
-    ap.add_argument("--json", default="/lustre/research/hep/akshriva/Dream-Timing/Calib_output/master_3mm_6mm_shifts_global_best.json", help="Path to JSON")
+    ap.add_argument("--json", default="/lustre/research/hep/akshriva/Dream-Timing/Calib_output/master_3mm_6mm_shifts_global_bestbyhand.json", help="Path to JSON")
     ap.add_argument("--outdir", default="/lustre/research/hep/akshriva/Dream-Timing/Calib_output", help="Output directory")
     args = ap.parse_args()
 
