@@ -2,27 +2,45 @@
 """
 waveform_per_page_t50.py
 =========================
-For each (thickness × particle × family) combination:
-  - Apply PID + ADC amplitude cuts
-  - Select up to N_WAVEFORMS events (those whose t50 is closest to the modal t50)
-  - Write one PDF where EACH PAGE shows ONE baseline-subtracted waveform
-    with the x-axis shifted so that t50 = 0  (window: -TWINDOW_LEFT … +TWINDOW_RIGHT ns)
+For each (thickness × particle × family) combination produces:
 
-Output layout:
-  <outdir>/
-    <thickness>/
-      <particle>/
-        Waveforms_<family>_<thickness>_<particle>_<N>events.pdf
+  1. PDF  – one page per waveform, x-axis centred at t50 = 0
+  2. INDEX CSV  – one row per waveform with all metadata
+  3. WAVEFORM CSV  – full ADC + time data for every selected waveform
+                     so any plot can be reproduced without the ROOT file
+
+Output structure
+----------------
+<outdir>/
+  <thickness>/
+    <particle>/
+      Waveforms_<family>_<thickness>_<particle>_<N>events.pdf
+      Waveforms_<family>_<thickness>_<particle>_<N>events_index.csv
+      Waveforms_<family>_<thickness>_<particle>_<N>events_waveforms.csv
+
+INDEX CSV columns
+-----------------
+  page, run_label, run_number, event_index, thickness, particle, family,
+  channel_code, branch_name, beam_energy_GeV, t50_ns,
+  waveform_peak_adc, waveform_trough_adc
+
+WAVEFORM CSV columns
+--------------------
+  page, run_label, event_index, bin_index,
+  time_ns (absolute), time_rel_ns (relative to t50, i.e. centred at 0),
+  adc (baseline-subtracted)
 
 Usage
 -----
 python waveform_per_page_t50.py \\
     --outdir ./WaveformPages \\
     --n-waveforms 100 \\
-    --pid electron          # optional override; otherwise all particles in RUN_FILES are run
+    --pid electron       # optional: restrict particle type
+    --thickness 3mm      # optional: restrict thickness
+    --family Quartz      # optional: restrict sensor family
 """
 
-import os, re, argparse
+import os, re, csv, argparse
 import numpy as np
 import uproot
 import awkward as ak
@@ -42,22 +60,44 @@ except ImportError:
 # =============================================================================
 TREE_NAME     = "EventTree"
 TIME_PER_BIN  = 0.2          # ns / DRS4 bin
-BASELINE_BINS = 30            # leading bins used for baseline
+BASELINE_BINS = 30            # leading bins used for baseline estimate
 TIMING_SUFFIX = "_LP2_50"     # branch suffix storing t50 [ns]
 AMP_THRESHOLD = 100.0         # min baseline-subtracted peak  [ADC]
 MIN_ADC_CUT   = -100.0        # max allowed trough (rejects saturated / noisy)
-N_WAVEFORMS   = 100           # waveforms per combination
+N_WAVEFORMS   = 100           # default waveforms per combination
 
-# x-axis window around t50 = 0
-TWINDOW_LEFT  = 15.0          # ns shown before t50
-TWINDOW_RIGHT = 25.0          # ns shown after  t50
+# x-axis display window around t50 = 0  (used in PDF only; CSV stores full waveform)
+TWINDOW_LEFT  = 15.0          # ns before t50
+TWINDOW_RIGHT = 25.0          # ns after  t50
 
 # =============================================================================
-# CHANNEL CODES  (Board | Group | Channel, zero-padded to 3 digits)
+# BEAM ENERGY MAP  (run number → beam energy in GeV)
+# Add / edit entries here whenever you add new runs.
+# Runs NOT listed fall back to DEFAULT_ENERGY.
+# =============================================================================
+DEFAULT_ENERGY = 40.0   # GeV
+
+RUN_ENERGY_MAP = {
+    # ── 3 mm runs ──────────────────────────────────────────────────
+    1429: 40.0,   # 3mm pion
+    1480: 40.0,   # 3mm muon
+    1355: 40.0,   # 3mm electron
+    1501: 40.0,   # 3mm electron 90 deg
+    # ── 6 mm runs ──────────────────────────────────────────────────
+    1474: 40.0,   # 6mm pion
+    1509: 40.0,   # 6mm electron
+    # ── add more below as needed ───────────────────────────────────
+    # 1600: 20.0,
+    # 1601: 60.0,
+    # 1602: 100.0,
+}
+
+# =============================================================================
+# CHANNEL CODES  (3-digit string: Board | Group | Channel)
 # =============================================================================
 CHANNELS_3MM = {"Quartz": "104", "Plastic": "010", "Scintillator": "107"}
 CHANNELS_6MM = {"Quartz": "604", "Plastic": "606", "Scintillator": "615"}
-MCP1_CODE    = "037"   # Board 0, Group 3, Channel 7
+MCP1_CODE    = "037"   # Board 0, Group 3, Channel 7  (reference MCP)
 
 FAMILY_COLORS = {
     "Quartz":       "tab:orange",
@@ -70,8 +110,11 @@ FAMILY_DISPLAY = {
     "Quartz":       "FSHA (Fused-silica)",
     "Plastic":      "Toray PJR-FB750 (Plastic)",
     "Scintillator": "SCSF-81J (Scintillator)",
-    "MCP1":         "MCP1 (Reference)",
+    "MCP1":         "MCP1 Reference",
 }
+# =============================================================================
+# RUN FILE MAP  – edit paths to match your NTuple location
+# =============================================================================
 
 # =============================================================================
 # RUN FILE MAP  – edit paths to match your NTuple location
@@ -89,7 +132,7 @@ RUN_FILES = {
         "electron": ["/lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1509_250928164817_converted_timingskim.root"],
     },
 }
-
+ 
 # =============================================================================
 # PID  (mirrors PrecisionTiming_wcommentsfromDrA.py exactly)
 # =============================================================================
@@ -106,7 +149,7 @@ PID_BRANCH_MAP = {
     "Cer519":      "DRS_Board7_Group2_Channel6",
     "Cer537":      "DRS_Board7_Group2_Channel7",
 }
-
+ 
 _SVC_CUTS = {
     "HoleVeto":    (100, 350, -2e3,   "Sum"),
     "PSD":         (100, 400, -3500., "Sum"),
@@ -115,7 +158,7 @@ _SVC_CUTS = {
     "Cer519":      (450, 550, -1000., "Sum"),
     "Cer537":      (400, 500, -500.,  "Sum"),
 }
-
+ 
 _PARTICLE_REQS = {
     "muon":          {"TTUMuonVeto": True,  "PSD": False},
     "pion":          {"TTUMuonVeto": False, "PSD": False,
@@ -125,8 +168,8 @@ _PARTICLE_REQS = {
     "electron_90deg":{"TTUMuonVeto": False, "PSD": True,
                       "Cer474": True, "Cer519": True, "Cer537": True},
 }
-
-
+ 
+ 
 def compute_pid_mask(tree, particle):
     reqs = _PARTICLE_REQS.get(particle.lower(), {})
     mask = np.ones(tree.num_entries, dtype=bool)
@@ -146,124 +189,121 @@ def compute_pid_mask(tree, particle):
         except Exception:
             continue
     return mask
-
+ 
 # =============================================================================
 # HELPERS
 # =============================================================================
-
+ 
 def code_to_branch(code):
-    """'104'  →  'DRS_Board1_Group0_Channel4'"""
     s = str(code).zfill(3)
     return f"DRS_Board{s[0]}_Group{s[1]}_Channel{s[2]}"
-
-
-def run_label(path):
+ 
+def run_number_from_path(path):
+    m = re.search(r"run(\d+)", os.path.basename(path))
+    return int(m.group(1)) if m else None
+ 
+def run_label_from_path(path):
     m = re.search(r"(run\d+)", os.path.basename(path))
     return m.group(1) if m else os.path.splitext(os.path.basename(path))[0]
-
-
+ 
+def get_beam_energy(run_number):
+    return RUN_ENERGY_MAP.get(run_number, DEFAULT_ENERGY) if run_number is not None else DEFAULT_ENERGY
+ 
 def display_particle(p):
-    if p.lower() == "electron":      return "Positron"
+    if p.lower() == "electron":       return "Positron"
     if p.lower() == "electron_90deg": return "Positron (90°)"
     return p.capitalize()
-
-
+ 
 def modal_t50(t50_values):
-    """Return the bin-centre of the tallest bin in a 100-bin histogram."""
-    if len(t50_values) == 0:
+    arr = np.asarray(t50_values)
+    if len(arr) == 0:
         return np.nan
-    hist, edges = np.histogram(t50_values, bins=100)
-    peak_idx    = np.argmax(hist)
+    hist, edges = np.histogram(arr, bins=100)
+    peak_idx = int(np.argmax(hist))
     return 0.5 * (edges[peak_idx] + edges[peak_idx + 1])
-
+ 
 # =============================================================================
-# COLLECT VALID EVENTS for one (file, family_branch)
+# COLLECT VALID EVENTS
 # =============================================================================
-
-def collect_valid_events(fpath, branch_code, particle, pid_mask_cache=None):
+ 
+def collect_valid_events(fpath, branch_code, particle):
     """
-    Returns list of (event_index, t50_ns, waveform_array) tuples that pass
-    PID + ADC cuts and have a valid finite t50 > 0.
-
-    pid_mask_cache: pass a pre-computed mask to avoid re-reading PID branches.
+    Returns list of dicts:
+      { run_label, run_number, event_index, t50_ns, waveform }
+    waveform is the FULL baseline-subtracted array (all bins, not windowed).
     """
-    br      = code_to_branch(branch_code)
-    t50_br  = br + TIMING_SUFFIX
+    br     = code_to_branch(branch_code)
+    t50_br = br + TIMING_SUFFIX
+    rnum   = run_number_from_path(fpath)
+    rl     = run_label_from_path(fpath)
     records = []
-
+ 
     try:
         with uproot.open(fpath) as f:
             tree = f[TREE_NAME]
-
-            if br not in tree.keys() or t50_br not in tree.keys():
-                print(f"  [SKIP] Branch {br} or {t50_br} not found in {os.path.basename(fpath)}")
+ 
+            if br not in tree.keys():
+                print(f"  [SKIP] Branch {br} not found in {os.path.basename(fpath)}")
                 return records
-
-            # ── PID mask ──────────────────────────────────────────────────────
-            if pid_mask_cache is not None:
-                pid_mask = pid_mask_cache
-            else:
-                pid_mask = compute_pid_mask(tree, particle)
-
-            # ── read waveforms & t50 ─────────────────────────────────────────
-            waves_ak = tree[br].array(library="ak")
-            baseline = ak.mean(waves_ak[:, :BASELINE_BINS], axis=1)
-            w_sub_ak = waves_ak - baseline          # baseline-subtracted (ak)
-
-            peak_ak  = ak.max(w_sub_ak, axis=1)
-            trough_ak= ak.min(w_sub_ak, axis=1)
-
-            adc_mask = ak.to_numpy(
-                (peak_ak  >=  AMP_THRESHOLD) &
+            if t50_br not in tree.keys():
+                print(f"  [SKIP] Timing branch {t50_br} not found in {os.path.basename(fpath)}")
+                return records
+ 
+            pid_mask  = compute_pid_mask(tree, particle)
+            waves_ak  = tree[br].array(library="ak")
+            baseline  = ak.mean(waves_ak[:, :BASELINE_BINS], axis=1)
+            w_sub_ak  = waves_ak - baseline
+            peak_ak   = ak.max(w_sub_ak, axis=1)
+            trough_ak = ak.min(w_sub_ak, axis=1)
+            adc_mask  = ak.to_numpy(
+                (peak_ak  >= AMP_THRESHOLD) &
                 (trough_ak >= MIN_ADC_CUT)
             )
-
-            t50_arr  = tree[t50_br].array(library="np")
-            t50_valid= np.isfinite(t50_arr) & (t50_arr > 0)
-
-            combined = pid_mask & adc_mask & t50_valid
+            t50_arr = tree[t50_br].array(library="np")
+            t50_ok  = np.isfinite(t50_arr) & (t50_arr > 0)
+ 
+            combined = pid_mask & adc_mask & t50_ok
             good_idx = np.where(combined)[0]
-
-            print(f"  [INFO] {os.path.basename(fpath)} | branch {br} "
-                  f"| PID passed {pid_mask.sum()}, ADC {adc_mask.sum()}, "
-                  f"t50 valid {t50_valid.sum()}, combined {combined.sum()}")
-
-            # read waveforms for good events only (uproot entry slicing)
-            w_np = ak.to_numpy(w_sub_ak)   # shape (N_entries, N_bins)
-
+ 
+            print(f"  [INFO] {os.path.basename(fpath)} | {br}"
+                  f" | PID {pid_mask.sum()}  ADC {adc_mask.sum()}"
+                  f"  t50-ok {t50_ok.sum()}  combined {combined.sum()}")
+ 
+            w_np = ak.to_numpy(w_sub_ak)   # (N_entries, N_bins) – full waveform
             for idx in good_idx:
-                records.append((idx, float(t50_arr[idx]), w_np[idx].copy()))
-
+                records.append({
+                    "run_label":   rl,
+                    "run_number":  rnum,
+                    "event_index": int(idx),
+                    "t50_ns":      float(t50_arr[idx]),
+                    "waveform":    w_np[idx].copy(),
+                })
+ 
     except Exception as e:
         print(f"  [ERROR] {fpath}: {e}")
-
+ 
     return records
-
+ 
 # =============================================================================
-# DRAW ONE PAGE: single waveform centred at t50 = 0
+# DRAW ONE PAGE
 # =============================================================================
-
-def draw_single_waveform(ax, waveform, t50, event_idx, run_name,
-                         family, particle, thickness, page_num, total):
-    """
-    Plot one baseline-subtracted waveform on *ax*.
-    x-axis is time relative to t50 (t50 = 0 by construction).
-    """
-    n_bins  = len(waveform)
-    t_raw   = np.arange(n_bins) * TIME_PER_BIN          # absolute time [ns]
-    t_rel   = t_raw - t50                                # shift so t50 = 0
-
-    # ── restrict to display window ────────────────────────────────────────────
-    win_mask = (t_rel >= -TWINDOW_LEFT) & (t_rel <= TWINDOW_RIGHT)
-    t_plot   = t_rel[win_mask]
-    w_plot   = waveform[win_mask]
-
+ 
+def draw_single_waveform(ax, record, family, branch_code, particle, thickness,
+                         page_num, total):
+    wf     = record["waveform"]
+    t50    = record["t50_ns"]
+    rl     = record["run_label"]
+    ev     = record["event_index"]
+    rnum   = record["run_number"]
+    energy = get_beam_energy(rnum)
+ 
+    t_rel = np.arange(len(wf)) * TIME_PER_BIN - t50
+    win   = (t_rel >= -TWINDOW_LEFT) & (t_rel <= TWINDOW_RIGHT)
+ 
     color = FAMILY_COLORS.get(family, "tab:gray")
-
-    ax.plot(t_plot, w_plot, color=color, lw=1.8)
-    ax.axvline(0.0, color="black", ls="--", lw=1.5, alpha=0.75,
-               label=r"$t_{50} = 0$")
-
+    ax.plot(t_rel[win], wf[win], color=color, lw=1.8)
+    ax.axvline(0.0, color="black", ls="--", lw=1.5, alpha=0.75, label=r"$t_{50} = 0$")
+ 
     ax.set_xlim(-TWINDOW_LEFT, TWINDOW_RIGHT)
     ax.set_xlabel(r"$t - t_{50}$  [ns]", fontsize=14)
     ax.set_ylabel("ADC counts (baseline subtracted)", fontsize=13)
@@ -273,152 +313,190 @@ def draw_single_waveform(ax, waveform, t50, event_idx, run_name,
     ax.tick_params(axis="both", which="minor", length=4,
                    direction="in", top=True, right=True)
     ax.legend(fontsize=11, frameon=False, loc="upper right")
-
-    # ── CMS label / fallback title ────────────────────────────────────────────
-    disp_p   = display_particle(particle)
-    r_label  = f"40 GeV {disp_p} | {thickness} | {FAMILY_DISPLAY.get(family, family)}"
+ 
+    disp_p  = display_particle(particle)
+    r_label = (f"{energy:.0f} GeV {disp_p} | {thickness} | "
+               f"{FAMILY_DISPLAY.get(family, family)}")
     if HEP_AVAILABLE:
         try:
-            hep.cms.label(ax=ax, exp="CaloX", data=False,
-                          rlabel=r_label, llabel="")
+            hep.cms.label(ax=ax, exp="CaloX", data=False, rlabel=r_label, llabel="")
         except Exception:
             ax.set_title(f"CaloX — {r_label}", fontsize=11)
     else:
         ax.set_title(f"CaloX — {r_label}", fontsize=11)
-
-    # ── info box (top-left) ───────────────────────────────────────────────────
-    info = (f"Run: {run_name}   Event: {event_idx}\n"
-            f"$t_{{50}}$ = {t50:.3f} ns   |   "
-            f"Waveform {page_num}/{total}")
-    ax.text(0.02, 0.97, info,
-            transform=ax.transAxes, fontsize=10,
-            va="top", ha="left",
-            bbox=dict(boxstyle="round,pad=0.3",
-                      facecolor="white", edgecolor="gray", alpha=0.85))
-
-# =============================================================================
-# PROCESS ONE COMBINATION  (thickness × particle × family)
-# =============================================================================
-
-def process_combination(thickness, particle, files, family, branch_code, outdir, n_waves):
-    print(f"\n{'='*60}")
-    print(f"  Processing: {thickness} | {particle} | {family}  (code {branch_code})")
-    print(f"{'='*60}")
-
-    os.makedirs(outdir, exist_ok=True)
-
-    # ── gather events from all files ──────────────────────────────────────────
-    all_records = []   # list of (fpath, ev_idx, t50, waveform)
-    for fpath in files:
-        recs = collect_valid_events(fpath, branch_code, particle)
-        for (ev_idx, t50, wf) in recs:
-            all_records.append((fpath, ev_idx, t50, wf))
-
-    if not all_records:
-        print(f"  [WARN] No valid events found. Skipping.")
-        return
-
-    # ── pick n_waves events closest to the modal t50 ─────────────────────────
-    all_t50s = np.array([r[2] for r in all_records])
-    mode     = modal_t50(all_t50s)
-    print(f"  [INFO] Total valid events: {len(all_records)}  |  modal t50 = {mode:.3f} ns")
-
-    distances   = np.abs(all_t50s - mode)
-    sorted_idx  = np.argsort(distances)
-    chosen_idx  = sorted_idx[:n_waves]
-    chosen      = [all_records[i] for i in chosen_idx]
-
-    print(f"  [INFO] Selected {len(chosen)} waveforms for PDF.")
-
-    # ── write PDF ─────────────────────────────────────────────────────────────
-    safe_particle = particle.replace("_", "")
-    pdf_path = os.path.join(
-        outdir,
-        f"Waveforms_{family}_{thickness}_{safe_particle}_{len(chosen)}events.pdf"
+ 
+    branch_name = code_to_branch(branch_code)
+    info = (
+        f"Run        : {rl}\n"
+        f"Event      : {ev}\n"
+        f"Channel    : {branch_code}  ({branch_name})\n"
+        f"Family     : {family}  —  {FAMILY_DISPLAY.get(family, '')}\n"
+        f"Beam energy: {energy:.0f} GeV\n"
+        f"t\u2085\u2080        : {t50:.3f} ns\n"
+        f"Waveform   : {page_num} / {total}"
     )
-
-    with PdfPages(pdf_path) as pdf:
-        for page, (fpath, ev_idx, t50, wf) in enumerate(chosen, start=1):
-            rl  = run_label(fpath)
+    ax.text(
+        0.02, 0.97, info,
+        transform=ax.transAxes, fontsize=9,
+        va="top", ha="left", family="monospace",
+        bbox=dict(boxstyle="round,pad=0.4",
+                  facecolor="white", edgecolor="gray", alpha=0.90),
+    )
+ 
+# =============================================================================
+# CSV SCHEMA  – one row per DRS4 bin
+# =============================================================================
+CSV_HEADER = ["event", "run_num", "particle_type", "channel_num", "time_ns", "adc"]
+ 
+# =============================================================================
+# PROCESS ONE COMBINATION
+# =============================================================================
+ 
+def process_combination(thickness, particle, files, family, branch_code, outdir, n_waves):
+    print(f"\n{'='*65}")
+    print(f"  {thickness} | {particle} | {family}  (code {branch_code})")
+    print(f"{'='*65}")
+ 
+    os.makedirs(outdir, exist_ok=True)
+ 
+    # ── gather all valid events ───────────────────────────────────────────────
+    all_records = []
+    for fpath in files:
+        all_records.extend(collect_valid_events(fpath, branch_code, particle))
+ 
+    if not all_records:
+        print(f"  [WARN] No valid events — skipping.")
+        return
+ 
+    # ── select n_waves events closest to modal t50 ────────────────────────────
+    all_t50s   = np.array([r["t50_ns"] for r in all_records])
+    mode       = modal_t50(all_t50s)
+    chosen_idx = np.argsort(np.abs(all_t50s - mode))[:n_waves]
+    chosen     = [all_records[i] for i in chosen_idx]
+ 
+    print(f"  [INFO] Total valid: {len(all_records)}  |  modal t50 = {mode:.3f} ns")
+    print(f"  [INFO] Writing {len(chosen)} waveforms")
+ 
+    safe_p   = particle.replace("_", "")
+    stem     = f"Waveforms_{family}_{thickness}_{safe_p}_{len(chosen)}events"
+    pdf_path = os.path.join(outdir, stem + ".pdf")
+    csv_path = os.path.join(outdir, stem + ".csv")
+ 
+    with PdfPages(pdf_path) as pdf, open(csv_path, "w", newline="") as csv_fh:
+ 
+        writer = csv.DictWriter(csv_fh, fieldnames=CSV_HEADER)
+        writer.writeheader()
+ 
+        for page, record in enumerate(chosen, start=1):
+            wf   = record["waveform"]
+            t50  = record["t50_ns"]
+            rnum = record["run_number"]
+            ev   = record["event_index"]
+ 
+            # time axis relative to t50  (t50 = 0)
+            t_rel = np.arange(len(wf)) * TIME_PER_BIN - t50
+ 
+            # apply the same window used in the plot so CSV and PDF match exactly
+            win      = (t_rel >= -TWINDOW_LEFT) & (t_rel <= TWINDOW_RIGHT)
+            t_window = t_rel[win]
+            w_window = wf[win]
+ 
+            # ── PDF page ──────────────────────────────────────────────────────
             fig, ax = plt.subplots(figsize=(12, 6))
-
             draw_single_waveform(
-                ax=ax,
-                waveform=wf,
-                t50=t50,
-                event_idx=ev_idx,
-                run_name=rl,
-                family=family,
-                particle=particle,
-                thickness=thickness,
-                page_num=page,
-                total=len(chosen),
+                ax=ax, record=record, family=family,
+                branch_code=branch_code, particle=particle,
+                thickness=thickness, page_num=page, total=len(chosen),
             )
-
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
-
-    print(f"  [OK] Wrote {len(chosen)}-page PDF: {pdf_path}")
-
+ 
+            # ── CSV: one row per bin IN THE PLOT WINDOW only ──────────────────
+            # time_ns ranges from -TWINDOW_LEFT to +TWINDOW_RIGHT  (t50 = 0)
+            # this matches the x-axis of the paired PDF page exactly
+            rnum_str = str(rnum) if rnum is not None else ""
+            for t_val, adc_val in zip(t_window, w_window):
+                writer.writerow({
+                    "event":         ev,
+                    "run_num":       rnum_str,
+                    "particle_type": particle,
+                    "channel_num":   branch_code,
+                    "time_ns":       f"{t_val:.4f}",
+                    "adc":           f"{adc_val:.4f}",
+                })
+ 
+    if chosen:
+        _t = np.arange(len(chosen[0]["waveform"])) * TIME_PER_BIN - chosen[0]["t50_ns"]
+        n_bins_window = int(np.sum((_t >= -TWINDOW_LEFT) & (_t <= TWINDOW_RIGHT)))
+    else:
+        n_bins_window = 0
+    print(f"  [OK] PDF → {pdf_path}")
+    print(f"  [OK] CSV → {csv_path}")
+    print(f"       ({len(chosen)} waveforms x {n_bins_window} windowed bins = "
+          f"{len(chosen) * n_bins_window:,} rows  "
+          f"[window: -{TWINDOW_LEFT} to +{TWINDOW_RIGHT} ns])")
+ 
 # =============================================================================
 # DRIVER
 # =============================================================================
-
+ 
 def main():
     ap = argparse.ArgumentParser(
-        description="One waveform per page, centred at t50, with PID cuts."
+        description=(
+            "One waveform per PDF page, centred at t50, PID-selected. "
+            "Each PDF is paired with a CSV: "
+            "event | run_num | particle_type | channel_num | time_ns | adc"
+        )
     )
-    ap.add_argument("--outdir",      default="./paperwaveforms",
-                    help="Root output directory")
+    ap.add_argument("--outdir",      default="./paperwaveforms4_wcsv",
+                    help="Root output directory  (default: ./paperwaveforms3_wcsv)")
     ap.add_argument("--n-waveforms", type=int, default=N_WAVEFORMS,
-                    help="Number of waveforms (pages) per combination")
-    ap.add_argument("--pid",         default=None,
+                    help=f"Waveforms per combination  (default: {N_WAVEFORMS})")
+    ap.add_argument("--pid",       default=None,
                     choices=["muon", "pion", "electron", "electron_90deg"],
-                    help="Run only this particle type (default: all)")
-    ap.add_argument("--thickness",   default=None,
-                    choices=["3mm", "6mm"],
-                    help="Run only this thickness (default: both)")
-    ap.add_argument("--family",      default=None,
+                    help="Restrict to one particle type  (default: all)")
+    ap.add_argument("--thickness", default=None, choices=["3mm", "6mm"],
+                    help="Restrict to one thickness       (default: both)")
+    ap.add_argument("--family",    default=None,
                     choices=["Quartz", "Plastic", "Scintillator", "MCP1"],
-                    help="Run only this sensor family (default: all)")
+                    help="Restrict to one sensor family   (default: all)")
     args = ap.parse_args()
-
+ 
     os.makedirs(args.outdir, exist_ok=True)
-
+ 
     for thickness, particles in RUN_FILES.items():
         if args.thickness and thickness != args.thickness:
             continue
-
+ 
         chan_map = CHANNELS_3MM if thickness == "3mm" else CHANNELS_6MM
-
-        # Build list of families to process for this thickness
         families = {**chan_map, "MCP1": MCP1_CODE}
-
+ 
         for particle, raw_files in particles.items():
             if args.pid and particle != args.pid:
                 continue
             if not raw_files:
                 print(f"[SKIP] No files configured for {thickness} | {particle}")
                 continue
-
+ 
             for family, branch_code in families.items():
                 if args.family and family != args.family:
                     continue
-
+ 
                 subdir = os.path.join(args.outdir, thickness, particle)
                 process_combination(
-                    thickness    = thickness,
-                    particle     = particle,
-                    files        = raw_files,
-                    family       = family,
-                    branch_code  = branch_code,
-                    outdir       = subdir,
-                    n_waves      = args.n_waveforms,
+                    thickness   = thickness,
+                    particle    = particle,
+                    files       = raw_files,
+                    family      = family,
+                    branch_code = branch_code,
+                    outdir      = subdir,
+                    n_waves     = args.n_waveforms,
                 )
-
-    print("\n[DONE] All waveform PDFs written.")
-
-
+ 
+    print("\n[DONE] All PDFs and CSVs written.")
+ 
+ 
 if __name__ == "__main__":
     main()
+ 
