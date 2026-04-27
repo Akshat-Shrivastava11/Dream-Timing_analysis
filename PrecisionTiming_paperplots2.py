@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Paper-level CaloX timing z-scan plotting script.
+Paper-level CaloX Z-scan plotting script.
 
 Outputs are written to TiminingZscan_summary_forpaper by default.
 
@@ -10,7 +10,8 @@ What this script makes:
      The legend uses z-location, not run number.
   3. Individual PNG/PDF versions of each channel overlay.
   4. A special run1501 overlay for channels 107, 100, and 104.
-  5. A clean z-scan schematic diagram.
+  5. A velocity fit plot: mean TOA vs z position for each family.
+  6. A clean z-scan schematic diagram.
 
 Example:
 python make_timing_zscan_forpaper.py \
@@ -22,6 +23,7 @@ python make_timing_zscan_forpaper.py \
 import os
 import re
 import csv
+import json
 import glob
 import argparse
 from dataclasses import dataclass
@@ -201,23 +203,47 @@ class FitRecord:
 # ============================================================
 # Style helpers
 # ============================================================
+
+# Big paper/slide-friendly font sizes.
+# These are intentionally large because the plots are meant for talks/paper figures.
+AXIS_LABEL_FONTSIZE   = 38
+TICK_LABEL_FONTSIZE   = 32
+CMS_LABEL_FONTSIZE    = 34
+TITLE_FONTSIZE        = 34
+LEGEND_FONTSIZE       = 24
+LEGEND_TITLE_FONTSIZE = 26
+ANNOTATION_FONTSIZE   = 30
+
+
 def apply_paper_style():
     plt.rcParams.update({
-        "figure.figsize": (14, 10),
+        "figure.figsize": (16, 11),
         "figure.dpi": 120,
         "savefig.dpi": 300,
-        "font.size": 18,
-        "axes.labelsize": 22,
-        "axes.titlesize": 22,
-        "xtick.labelsize": 18,
-        "ytick.labelsize": 18,
-        "legend.fontsize": 14,
-        "lines.linewidth": 3.0,
-        "axes.linewidth": 1.3,
-        "xtick.major.size": 8,
-        "ytick.major.size": 8,
-        "xtick.minor.size": 4,
-        "ytick.minor.size": 4,
+
+        "font.size": 30,
+        "axes.labelsize": AXIS_LABEL_FONTSIZE,
+        "axes.titlesize": TITLE_FONTSIZE,
+        "xtick.labelsize": TICK_LABEL_FONTSIZE,
+        "ytick.labelsize": TICK_LABEL_FONTSIZE,
+        "legend.fontsize": LEGEND_FONTSIZE,
+        "font.weight": "bold",
+        "axes.labelweight": "bold",
+        "axes.titleweight": "bold",
+
+        "lines.linewidth": 3.5,
+        "axes.linewidth": 1.8,
+
+        "xtick.major.size": 12,
+        "ytick.major.size": 12,
+        "xtick.minor.size": 7,
+        "ytick.minor.size": 7,
+
+        "xtick.major.width": 1.8,
+        "ytick.major.width": 1.8,
+        "xtick.minor.width": 1.4,
+        "ytick.minor.width": 1.4,
+
         "xtick.direction": "in",
         "ytick.direction": "in",
         "xtick.top": True,
@@ -241,18 +267,191 @@ def suffix_display_name(suffix: str) -> str:
     return suffix.strip("_")
 
 
-def setup_paper_axes(ax, xlabel, ylabel, particle_type, suffix, llabel="Timing z-scan"):
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
+def setup_paper_axes(ax, xlabel, ylabel, particle_type, suffix, llabel="Z-Scan"):
+    """
+    Shared large-label CMS-style axis formatting for all paper plots.
+    This copies the older velocity-plot aesthetic, but scales the labels up.
+    """
+    ax.set_xlabel(xlabel, fontsize=AXIS_LABEL_FONTSIZE, fontweight="bold", loc="right")
+    ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONTSIZE, fontweight="bold", loc="top")
+
+    ax.tick_params(
+        axis="both",
+        which="major",
+        labelsize=TICK_LABEL_FONTSIZE,
+        length=12,
+        width=1.8,
+        direction="in",
+        top=True,
+        right=True,
+    )
+    ax.tick_params(
+        axis="both",
+        which="minor",
+        length=7,
+        width=1.4,
+        direction="in",
+        top=True,
+        right=True,
+    )
+
     ax.minorticks_on()
-    ax.tick_params(axis="both", which="major", length=8, width=1.2, direction="in", top=True, right=True)
-    ax.tick_params(axis="both", which="minor", length=4, width=1.0, direction="in", top=True, right=True)
-    rlabel = f"40 GeV {particle_display_name(particle_type)} | {suffix_display_name(suffix)}"
-    hep.cms.label(ax=ax, exp="CaloX", data=False, llabel=llabel, rlabel=rlabel, fontsize=20)
+    ax.grid(True, linestyle=":", alpha=0.30)
+
+    # Keep the right label clean: no LP2_50 suffix in the plot header.
+    rlabel = f"40 GeV {particle_display_name(particle_type)}"
+    hep.cms.label(
+        ax=ax,
+        exp="CaloX",
+        data=False,
+        llabel=llabel,
+        rlabel=rlabel,
+        fontsize=CMS_LABEL_FONTSIZE,
+    )
+
+    # Make all tick labels and CMS labels bold for readability.
+    for tick_label in ax.get_xticklabels() + ax.get_yticklabels():
+        tick_label.set_fontweight("bold")
+    for text in ax.texts:
+        text.set_fontweight("bold")
+        text.set_fontstyle("normal")
 
 
 def safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(s)).strip("_")
+
+
+def style_legend(legend):
+    """Bold legend text and title while keeping the legend frameless."""
+    if legend is None:
+        return
+    for text in legend.get_texts():
+        text.set_fontweight("bold")
+    title = legend.get_title()
+    if title is not None:
+        title.set_fontweight("bold")
+
+
+
+# ============================================================
+# ROOT cache helpers
+# ============================================================
+CACHE_FAMILY_NAMES = ["Plastic", "Quartz", "SCI"]
+
+
+def default_cache_root_path(outdir: str, pid: str, suffix: str, sci_channels: str) -> str:
+    """Default cache name for fitted records so plotting can be rerun quickly."""
+    suffix_tag = safe_name(suffix.strip("_") or "nosuffix")
+    return os.path.join(outdir, f"fit_records_cache_{pid}_{suffix_tag}_{sci_channels}.root")
+
+
+def write_records_root_cache(records: List[FitRecord], cache_root: str):
+    """Write fitted plot inputs to a ROOT file using uproot.
+
+    This stores the fit outputs and the arrays needed for plotting, so later
+    styling-only changes do not require reopening the large analysis ROOT files.
+    A small JSON sidecar stores string lookups for run/file names.
+    """
+    if not records:
+        print("[CACHE] No records to cache.")
+        return
+
+    os.makedirs(os.path.dirname(cache_root), exist_ok=True)
+
+    run_labels = sorted({r.run_label for r in records})
+    file_paths = sorted({r.file_path for r in records})
+    run_to_code = {s: i for i, s in enumerate(run_labels)}
+    file_to_code = {s: i for i, s in enumerate(file_paths)}
+    fam_to_code = {s: i for i, s in enumerate(CACHE_FAMILY_NAMES)}
+
+    try:
+        with uproot.recreate(cache_root) as fout:
+            fout["fit_records"] = {
+                "record_id": np.arange(len(records), dtype=np.int32),
+                "run_code": np.array([run_to_code[r.run_label] for r in records], dtype=np.int32),
+                "file_code": np.array([file_to_code[r.file_path] for r in records], dtype=np.int32),
+                "family_code": np.array([fam_to_code.get(r.family, -1) for r in records], dtype=np.int32),
+                "channel_int": np.array([int(r.channel) for r in records], dtype=np.int32),
+                "z_mm": np.array([r.z_mm for r in records], dtype=np.float64),
+                "n": np.array([r.n for r in records], dtype=np.int32),
+                "mu": np.array([r.mu for r in records], dtype=np.float64),
+                "sigma": np.array([r.sigma for r in records], dtype=np.float64),
+                "fwhm": np.array([r.fwhm for r in records], dtype=np.float64),
+                "time_err": np.array([r.time_err for r in records], dtype=np.float64),
+                "xlim0": np.array([r.xlim[0] for r in records], dtype=np.float64),
+                "xlim1": np.array([r.xlim[1] for r in records], dtype=np.float64),
+                "centers": ak.Array([np.asarray(r.centers, dtype=np.float64) for r in records]),
+                "hist_norm": ak.Array([np.asarray(r.hist_norm, dtype=np.float64) for r in records]),
+                "x_smooth": ak.Array([np.asarray(r.x_smooth, dtype=np.float64) for r in records]),
+                "y_gauss": ak.Array([np.asarray(r.y_gauss, dtype=np.float64) for r in records]),
+            }
+
+        meta_path = cache_root.replace(".root", "_metadata.json")
+        with open(meta_path, "w") as f:
+            json.dump(
+                {
+                    "run_labels": run_labels,
+                    "file_paths": file_paths,
+                    "family_names": CACHE_FAMILY_NAMES,
+                },
+                f,
+                indent=2,
+            )
+
+        print(f"[CACHE] Saved ROOT cache: {cache_root}")
+        print(f"[CACHE] Saved metadata:   {meta_path}")
+    except Exception as e:
+        print(f"[CACHE] WARNING: Could not write ROOT cache: {e}")
+
+
+def read_records_root_cache(cache_root: str) -> List[FitRecord]:
+    """Read fitted plot inputs from the ROOT cache."""
+    meta_path = cache_root.replace(".root", "_metadata.json")
+    meta = {}
+    if os.path.exists(meta_path):
+        with open(meta_path, "r") as f:
+            meta = json.load(f)
+
+    family_names = meta.get("family_names", CACHE_FAMILY_NAMES)
+    run_labels = meta.get("run_labels", [])
+    file_paths = meta.get("file_paths", [])
+
+    with uproot.open(cache_root) as fin:
+        arr = fin["fit_records"].arrays(library="ak")
+
+    records: List[FitRecord] = []
+    n_records = len(arr["record_id"])
+
+    for i in range(n_records):
+        fam_code = int(arr["family_code"][i])
+        run_code = int(arr["run_code"][i])
+        file_code = int(arr["file_code"][i])
+        channel_int = int(arr["channel_int"][i])
+
+        family = family_names[fam_code] if 0 <= fam_code < len(family_names) else "Unknown"
+        run_label = run_labels[run_code] if 0 <= run_code < len(run_labels) else f"run_code_{run_code}"
+        file_path = file_paths[file_code] if 0 <= file_code < len(file_paths) else f"file_code_{file_code}"
+
+        records.append(FitRecord(
+            file_path=file_path,
+            run_label=run_label,
+            z_mm=float(arr["z_mm"][i]),
+            family=family,
+            channel=f"{channel_int:03d}",
+            n=int(arr["n"][i]),
+            mu=float(arr["mu"][i]),
+            sigma=float(arr["sigma"][i]),
+            fwhm=float(arr["fwhm"][i]),
+            time_err=float(arr["time_err"][i]),
+            xlim=(float(arr["xlim0"][i]), float(arr["xlim1"][i])),
+            centers=np.asarray(arr["centers"][i], dtype=float),
+            hist_norm=np.asarray(arr["hist_norm"][i], dtype=float),
+            x_smooth=np.asarray(arr["x_smooth"][i], dtype=float),
+            y_gauss=np.asarray(arr["y_gauss"][i], dtype=float),
+        ))
+
+    print(f"[CACHE] Loaded {len(records)} records from: {cache_root}")
+    return records
 
 # ============================================================
 # Selection and timing helpers
@@ -356,7 +555,7 @@ def compute_wc_mask(tree, limit=WC_X_CUT):
 
 
 def get_z_position(run_label):
-    # Relative z map used in the timing z-scan.
+    # Relative z map used in the Z-scan.
     if "run1513" in run_label:
         if "192918" in run_label:
             return 163.5
@@ -600,52 +799,98 @@ def color_map_for_locations(records: List[FitRecord]):
     return {z: cmap(i % 10) for i, z in enumerate(z_values)}
 
 
-def plot_one_channel_overlay(ax, recs: List[FitRecord], particle_type, suffix, location_colors):
+def plot_one_channel_overlay(ax, recs: List[FitRecord], particle_type, suffix, location_colors, legend_ax=None):
     first = recs[0]
     ax.set_xlim(*first.xlim)
-    ax.set_ylim(0.0, 1.28)
+    ax.set_ylim(0.0, 1.30)
 
-    # Remove LP2_50 / LP50 from header
     setup_paper_axes(
         ax,
         "Time of Arrival [ns]",
         "Normalized Events",
         particle_type,
-        suffix=None,
+        suffix,
     )
+
+    handles, labels = [], []
 
     for r in recs:
         color = location_colors.get(r.z_mm, "black")
-        label = rf"{r.location_label}: $\mu={r.mu:.2f}$ ns, $\sigma={r.sigma:.2f}$ ns, N={r.n}"
-        ax.step(r.centers, r.hist_norm, where="mid", lw=2.0, alpha=0.35, color=color)
-        ax.plot(r.x_smooth, r.y_gauss, lw=3.6, color=color, label=label)
+        label = rf"{r.location_label}: $\mu$={r.mu:.2f} ns, $\sigma$={r.sigma:.2f} ns, N={r.n}"
+
+        ax.step(
+            r.centers,
+            r.hist_norm,
+            where="mid",
+            lw=2.2,
+            alpha=0.35,
+            color=color,
+        )
+        line, = ax.plot(
+            r.x_smooth,
+            r.y_gauss,
+            lw=3.8,
+            color=color,
+            label=label,
+        )
+        handles.append(line)
+        labels.append(label)
 
     title = f"{FAMILY_DISPLAY_NAMES.get(first.family, first.family)} | Channel {first.channel}"
     ax.text(
-        0.03, 0.90, title,
+        0.03,
+        0.86,
+        title,
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=24,
+        fontsize=TITLE_FONTSIZE,
         fontweight="bold",
         bbox=dict(
             boxstyle="round,pad=0.25",
             facecolor="white",
             edgecolor="none",
-            alpha=0.75,
+            alpha=0.78,
         ),
     )
 
-    ax.legend(
-        loc="upper right",
-        frameon=False,
-        fontsize=15,
-        handlelength=2.8,
-    )
+    # Put the legend in a separate right-hand panel when available.
+    # This prevents it from shrinking the plotting axis and avoids title/header overlap.
+    target_ax = legend_ax if legend_ax is not None else ax
+    if legend_ax is not None:
+        legend_ax.axis("off")
+        legend_ax.text(
+            0.00,
+            0.93,
+            "Z positions",
+            transform=legend_ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=LEGEND_TITLE_FONTSIZE,
+            fontweight="bold",
+        )
+        legend = legend_ax.legend(
+            handles,
+            labels,
+            loc="upper left",
+            bbox_to_anchor=(0.00, 0.84),
+            frameon=False,
+            fontsize=22,
+            handlelength=2.6,
+            borderaxespad=0.0,
+            labelspacing=0.85,
+        )
+    else:
+        legend = target_ax.legend(
+            handles,
+            labels,
+            loc="best",
+            frameon=False,
+            fontsize=LEGEND_FONTSIZE,
+            handlelength=2.5,
+        )
+    style_legend(legend)
 
-    ax.tick_params(axis="both", which="major", labelsize=18)
-    ax.xaxis.label.set_size(24)
-    ax.yaxis.label.set_size(24)
 
 def make_all_channel_location_overlays(records: List[FitRecord], outdir: str, particle_type, suffix, save_individual=True):
     if not records:
@@ -664,10 +909,14 @@ def make_all_channel_location_overlays(records: List[FitRecord], outdir: str, pa
 
     with PdfPages(pdf_path) as pdf:
         for (family, channel), recs in sorted(grouped.items(), key=lambda x: (x[0][0], int(x[0][1]))):
-            fig, ax = plt.subplots(figsize=(14, 10))
-            plot_one_channel_overlay(ax, recs, particle_type, suffix, location_colors)
-            fig.tight_layout()
-            pdf.savefig(fig)
+            fig = plt.figure(figsize=(24, 12))
+            gs = fig.add_gridspec(1, 2, width_ratios=[1.45, 1.00], wspace=0.07)
+            ax = fig.add_subplot(gs[0, 0])
+            legend_ax = fig.add_subplot(gs[0, 1])
+
+            plot_one_channel_overlay(ax, recs, particle_type, suffix, location_colors, legend_ax=legend_ax)
+            fig.subplots_adjust(left=0.08, right=0.98, top=0.84, bottom=0.16, wspace=0.06)
+            pdf.savefig(fig, dpi=200)
 
             if save_individual:
                 base = f"paper_overlay_{safe_name(family)}_ch{channel}"
@@ -694,235 +943,447 @@ def find_run_records(records: List[FitRecord], run_substring: str, requested):
 
 
 def make_run1501_anchor_overlay(records: List[FitRecord], outdir: str, particle_type, suffix, run_substring="run1501"):
-    # Legend/order: Quartz, Plastic, SCI
     requested = [
-        ("Quartz", "104"),
-        ("Plastic", "100"),
         ("SCI", "107"),
+        ("Plastic", "100"),
+        ("Quartz", "104"),
     ]
-
     selected = find_run_records(records, run_substring, requested)
     if not selected:
-        print(f"[PLOT] No {run_substring} anchor records found. Skipping Z-scan overlay.")
+        print(f"[PLOT] No {run_substring} anchor records found. Skipping anchor overlay.")
         return
-
-    # Force selected order to match requested order
-    order_map = {pair: i for i, pair in enumerate(requested)}
-    selected = sorted(selected, key=lambda r: order_map.get((r.family, r.channel), 999))
 
     xmin = min(r.xlim[0] for r in selected)
     xmax = max(r.xlim[1] for r in selected)
 
-    fig, ax = plt.subplots(figsize=(14, 10))
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(0.0, 1.28)
+    fig = plt.figure(figsize=(24, 12))
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.45, 1.00], wspace=0.07)
+    ax = fig.add_subplot(gs[0, 0])
+    legend_ax = fig.add_subplot(gs[0, 1])
+    legend_ax.axis("off")
 
-    # No LP50 in title/header
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(0.0, 1.30)
     setup_paper_axes(
         ax,
         "Time of Arrival [ns]",
         "Normalized Events",
         particle_type,
-        suffix=None,
-        llabel="Z-scan",
+        suffix,
+        llabel="Anchor-channel overlay",
     )
 
+    handles, labels = [], []
     for r in selected:
         color = FAMILY_COLORS.get(r.family, "black")
         fam_label = FAMILY_DISPLAY_NAMES.get(r.family, r.family)
-        label = (
-            rf"{fam_label}, Ch {r.channel}: "
-            rf"$\mu={r.mu:.2f}$ ns, $\sigma={r.sigma:.2f}$ ns, N={r.n}"
-        )
-        ax.step(r.centers, r.hist_norm, where="mid", lw=2.2, alpha=0.35, color=color)
-        ax.plot(r.x_smooth, r.y_gauss, lw=3.8, color=color, label=label)
+        label = rf"{fam_label}, Ch {r.channel}: $\mu$={r.mu:.2f} ns, $\sigma$={r.sigma:.2f} ns, N={r.n}"
+        ax.step(r.centers, r.hist_norm, where="mid", lw=2.4, alpha=0.35, color=color)
+        line, = ax.plot(r.x_smooth, r.y_gauss, lw=4.0, color=color, label=label)
+        handles.append(line)
+        labels.append(label)
 
     locs = sorted({r.location_label for r in selected})
     loc_text = locs[0] if len(locs) == 1 else ", ".join(locs)
-
     ax.text(
-        0.03, 0.90,
+        0.03,
+        0.86,
         f"Reference location: {loc_text}",
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=24,
+        fontsize=TITLE_FONTSIZE,
         fontweight="bold",
-        bbox=dict(
-            boxstyle="round,pad=0.25",
-            facecolor="white",
-            edgecolor="none",
-            alpha=0.75,
-        ),
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="none", alpha=0.75),
     )
 
-    ax.legend(
-        loc="upper right",
+    legend_ax.text(
+        0.00,
+        0.93,
+        "Channels",
+        transform=legend_ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=LEGEND_TITLE_FONTSIZE,
+        fontweight="bold",
+    )
+    legend = legend_ax.legend(
+        handles,
+        labels,
+        loc="upper left",
+        bbox_to_anchor=(0.00, 0.84),
         frameon=False,
-        fontsize=14,
-        handlelength=2.8,
+        fontsize=22,
+        handlelength=2.6,
+        borderaxespad=0.0,
+        labelspacing=0.95,
     )
+    style_legend(legend)
 
-    ax.tick_params(axis="both", which="major", labelsize=18)
-    ax.tick_params(axis="both", which="minor", labelsize=16)
-    ax.xaxis.label.set_size(24)
-    ax.yaxis.label.set_size(24)
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.84, bottom=0.16, wspace=0.06)
 
-    fig.tight_layout()
-
-    out_png = os.path.join(outdir, f"paper_{run_substring}_channels_104_100_107_overlay.png")
-    out_pdf = os.path.join(outdir, f"paper_{run_substring}_channels_104_100_107_overlay.pdf")
-    fig.savefig(out_png, bbox_inches="tight", dpi=250)
+    out_png = os.path.join(outdir, f"paper_{run_substring}_channels_107_100_104_overlay.png")
+    out_pdf = os.path.join(outdir, f"paper_{run_substring}_channels_107_100_104_overlay.pdf")
+    fig.savefig(out_png, bbox_inches="tight")
     fig.savefig(out_pdf, bbox_inches="tight")
     plt.close(fig)
-
     print(f"[PLOT] Saved: {out_png}")
     print(f"[PLOT] Saved: {out_pdf}")
 
 
+# ============================================================
+# Velocity / z-vs-TOA fit plot
+# ============================================================
+
+def make_velocity_z_toa_plot(
+    records: List[FitRecord],
+    outdir: str,
+    pid_label: str,
+    particle_type,
+    suffix: str,
+    families: dict,
+):
+    """
+    Fit mean TOA vs z-position independently for each material family.
+
+    This follows the older create_z_toa_plot style:
+      - combine all channels inside each family
+      - fit t = slope*z + intercept
+      - velocity = 1 / |slope|
+      - use fitted sigma as y-error and weight
+    """
+    if not records:
+        print("[VELOCITY] No records available. Skipping velocity plot.")
+        return
+
+    pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.pdf")
+    txt_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.txt")
+
+    print(f"\n[VELOCITY] Calculating independent velocity fits PID: {pid_label}")
+
+    with open(txt_path, "w") as f_out:
+        f_out.write("=" * 115 + "\n")
+        f_out.write(
+            f"{'FAMILY':<10} | {'VELOCITY [cm/ns]':<18} | "
+            f"{'V_ERROR [cm/ns]':<18} | {'FIT EQUATION'}\n"
+        )
+        f_out.write("=" * 115 + "\n")
+
+        with PdfPages(pdf_path) as pdf:
+            fig, ax = plt.subplots(figsize=(16, 11))
+
+            setup_paper_axes(
+                ax,
+                "Z Position [cm]",
+                "Mean Time of Arrival [ns]",
+                particle_type,
+                suffix,
+                llabel="Z-Scan",
+            )
+
+            ax.set_ylim(-15.0, -9.5)
+            ax.set_xlim(-20, 20)
+
+            text_y_pos = 0.94
+
+            for fam in ["Plastic", "Quartz", "SCI"]:
+                fam_records = [
+                    r for r in records
+                    if r.family == fam
+                    and r.z_mm != -999.0
+                    and np.isfinite(r.z_cm)
+                    and np.isfinite(r.mu)
+                    and np.isfinite(r.sigma)
+                    and r.sigma > 0
+                ]
+
+                if len(fam_records) < 2:
+                    print(f"[VELOCITY] Skipping {fam}: fewer than 2 valid points.")
+                    continue
+
+                z_arr = np.array([r.z_cm for r in fam_records], dtype=float)
+                mu_arr = np.array([r.mu for r in fam_records], dtype=float)
+                sig_arr = np.array([r.sigma for r in fam_records], dtype=float)
+
+                color = families[fam]["color"]
+                weights = 1.0 / sig_arr
+
+                try:
+                    params, cov = np.polyfit(z_arr, mu_arr, 1, w=weights, cov=True)
+                    slope, intercept = params
+                    slope_err = np.sqrt(cov[0, 0])
+                    intercept_err = np.sqrt(cov[1, 1])
+                except Exception as e:
+                    print(f"[VELOCITY] Fit covariance failed for {fam}: {e}")
+                    params = np.polyfit(z_arr, mu_arr, 1, w=weights)
+                    slope, intercept = params
+                    slope_err = np.nan
+                    intercept_err = np.nan
+
+                v_cm_ns = 1.0 / abs(slope) if slope != 0 else np.nan
+                v_err_cm_ns = abs(slope_err / slope**2) if slope != 0 and np.isfinite(slope_err) else np.nan
+
+                eq_str = (
+                    f"t = ({slope:.4f} ± {slope_err:.4f})z "
+                    f"{'+' if intercept >= 0 else '-'} "
+                    f"({abs(intercept):.2f} ± {intercept_err:.2f})"
+                )
+
+                f_out.write(
+                    f"{fam:<10} | {v_cm_ns:<18.3f} | "
+                    f"{v_err_cm_ns:<18.3f} | {eq_str}\n"
+                )
+
+                z_fit = np.linspace(min(z_arr) - 2.0, max(z_arr) + 2.0, 200)
+
+                ax.errorbar(
+                    z_arr,
+                    mu_arr,
+                    yerr=sig_arr,
+                    fmt="o",
+                    color=color,
+                    capsize=5,
+                    markersize=9,
+                    elinewidth=2.5,
+                    alpha=0.80,
+                )
+
+                ax.plot(
+                    z_fit,
+                    slope * z_fit + intercept,
+                    "-",
+                    color=color,
+                    linewidth=3.5,
+                )
+
+                display_name = FAMILY_DISPLAY_NAMES.get(fam, fam)
+                if np.isfinite(v_err_cm_ns):
+                    text_str = (
+                        f"{display_name}  "
+                        f"{v_cm_ns:.3f} $\\pm$ {v_err_cm_ns:.3f} cm/ns"
+                    )
+                else:
+                    text_str = f"{display_name}  {v_cm_ns:.3f} cm/ns"
+
+                ax.text(
+                    0.95,
+                    text_y_pos,
+                    text_str,
+                    transform=ax.transAxes,
+                    color=color,
+                    fontsize=26,
+                    fontweight="bold",
+                    va="top",
+                    ha="right",
+                )
+
+                text_y_pos -= 0.075
+
+            fig.subplots_adjust(left=0.11, right=0.98, top=0.84, bottom=0.15)
+            pdf.savefig(fig, dpi=200)
+            plt.close(fig)
+
+    print(f"[VELOCITY] Saved: {pdf_path}")
+    print(f"[VELOCITY] Saved: {txt_path}")
+
 def make_clean_zscan_diagram(outdir: str):
-    os.makedirs(outdir, exist_ok=True)
+    """
+    Scale-aware z-scan schematic.
 
-    out_png = os.path.join(outdir, "paper_zscan_diagram.png")
-    out_pdf = os.path.join(outdir, "paper_zscan_diagram.pdf")
+    HG-DREAM is drawn as a 200 cm long detector.
+    The beam scan positions are placed at their real relative z values:
+        -18.2 cm, -5.0 cm, 0.0 cm, +5.0 cm, +16.4 cm
 
-    positions_cm = [-18.2, -5.0, 0.0, 5.0, 16.4]
-    pos_labels = [f"Pos. {i}" for i in range(1, 6)]
-
-    fig, ax = plt.subplots(figsize=(12, 7))
+    The detector is centered at z = 0, so it spans [-100, +100] cm.
+    """
+    fig, ax = plt.subplots(figsize=(16, 7))
+    ax.set_xlim(-115, 115)
+    ax.set_ylim(0, 8)
     ax.axis("off")
 
-    # Light orange module
-    module_x0, module_y0 = 0.18, 0.35
-    module_w, module_h = 0.70, 0.20
+    # --------------------------------------------------------
+    # Geometry
+    # --------------------------------------------------------
+    detector_length_cm = 200.0
+    detector_xmin = -detector_length_cm / 2.0
+    detector_xmax = +detector_length_cm / 2.0
 
-    rect = plt.Rectangle(
-        (module_x0, module_y0),
-        module_w,
-        module_h,
-        transform=ax.transAxes,
-        facecolor="#f9a01b",
+    detector_y = 2.6
+    detector_h = 1.4
+
+    # True z-scan positions [cm]
+    z_positions = [-18.2, -5.0, 0.0, 5.0, 16.4]
+
+    # --------------------------------------------------------
+    # Detector block (to scale)
+    # --------------------------------------------------------
+    block = Rectangle(
+        (detector_xmin, detector_y),
+        detector_length_cm,
+        detector_h,
+        facecolor="#f3c27a",   # light orange
         edgecolor="black",
         linewidth=2.2,
-        alpha=0.88,
     )
-    ax.add_patch(rect)
+    ax.add_patch(block)
 
-    # Position x coordinates
-    xs = np.linspace(module_x0 + 0.08, module_x0 + module_w - 0.08, 5)
-
-    # Beam label moved left so it does not overlap
     ax.text(
-        module_x0 - 0.10,
-        0.84,
-        "40 GeV\npositron beam",
-        transform=ax.transAxes,
+        0,
+        detector_y + detector_h / 2.0,
+        "HG-DREAM (200 cm)",
         ha="center",
         va="center",
-        fontsize=18,
-        color="#174a7c",
+        fontsize=28,
+        fontweight="bold",
     )
 
-    # Arrows and labels
-    for x, label, z in zip(xs, pos_labels, positions_cm):
+    # --------------------------------------------------------
+    # z axis
+    # --------------------------------------------------------
+    axis_y = 1.15
+    z_arrow = FancyArrowPatch(
+        (detector_xmin - 8, axis_y),
+        (detector_xmax + 10, axis_y),
+        arrowstyle="-|>",
+        mutation_scale=24,
+        linewidth=2.5,
+        color="black",
+    )
+    ax.add_patch(z_arrow)
+
+    # Tick marks every 20 cm
+    for x in np.arange(-100, 101, 20):
+        ax.plot([x, x], [axis_y - 0.10, axis_y + 0.10], color="black", lw=1.6)
         ax.text(
             x,
-            0.91,
-            label,
-            transform=ax.transAxes,
+            axis_y - 0.28,
+            f"{int(x)}",
+            ha="center",
+            va="top",
+            fontsize=16,
+            fontweight="bold",
+        )
+
+    ax.text(
+        detector_xmax + 13,
+        axis_y,
+        "z [cm]",
+        ha="left",
+        va="center",
+        fontsize=22,
+        fontweight="bold",
+    )
+
+    # --------------------------------------------------------
+    # Beam arrows at real scan locations
+    # --------------------------------------------------------
+    arrow_top = 6.5
+    arrow_bottom = detector_y + detector_h + 0.15
+
+    for i, z in enumerate(z_positions, start=1):
+        arrow = FancyArrowPatch(
+            (z, arrow_top),
+            (z, arrow_bottom),
+            arrowstyle="-|>",
+            mutation_scale=26,
+            linewidth=2.5,
+            color="#1f4e79",
+        )
+        ax.add_patch(arrow)
+
+        # Dashed guide through detector
+        ax.plot(
+            [z, z],
+            [arrow_bottom, detector_y - 0.65],
+            linestyle=(0, (5, 4)),
+            color="black",
+            linewidth=1.8,
+        )
+
+        ax.text(
+            z,
+            arrow_top + 0.15,
+            f"Pos. {i}",
             ha="center",
             va="bottom",
             fontsize=18,
+            color="#1f4e79",
             fontweight="bold",
-            color="#174a7c",
-        )
-
-        ax.annotate(
-            "",
-            xy=(x, module_y0 + module_h + 0.015),
-            xytext=(x, 0.88),
-            xycoords=ax.transAxes,
-            textcoords=ax.transAxes,
-            arrowprops=dict(
-                arrowstyle="-|>",
-                lw=3.0,
-                color="#174a7c",
-                mutation_scale=28,
-            ),
-        )
-
-        ax.plot(
-            [x, x],
-            [module_y0 - 0.09, module_y0 + module_h],
-            transform=ax.transAxes,
-            linestyle="--",
-            color="black",
-            linewidth=2.2,
         )
 
         ax.text(
-            x,
-            0.20,
-            f"{z:+.1f} cm" if z != 0 else "0.0 cm",
-            transform=ax.transAxes,
+            z,
+            detector_y - 0.82,
+            f"{z:+.1f} cm",
             ha="center",
             va="top",
-            fontsize=15,
-            color="black",
+            fontsize=16,
+            fontweight="bold",
         )
 
-    # HG-DREAM label
+    # --------------------------------------------------------
+    # Beam label
+    # --------------------------------------------------------
     ax.text(
-        module_x0 + module_w / 2,
-        module_y0 + module_h / 2,
-        "HG-DREAM",
-        transform=ax.transAxes,
+        detector_xmin - 10,
+        arrow_top - 0.1,
+        "40 GeV\npositron beam",
+        ha="right",
+        va="center",
+        fontsize=18,
+        color="#1f4e79",
+        fontweight="bold",
+    )
+
+    # --------------------------------------------------------
+    # Show the scanned region span
+    # --------------------------------------------------------
+    scan_min = min(z_positions)
+    scan_max = max(z_positions)
+
+    # Bracket line below detector
+    bracket_y = detector_y - 0.30
+    ax.plot([scan_min, scan_max], [bracket_y, bracket_y], color="#8b0000", lw=3)
+    ax.plot([scan_min, scan_min], [bracket_y - 0.10, bracket_y + 0.10], color="#8b0000", lw=3)
+    ax.plot([scan_max, scan_max], [bracket_y - 0.10, bracket_y + 0.10], color="#8b0000", lw=3)
+
+    ax.text(
+        0.5 * (scan_min + scan_max),
+        bracket_y - 0.22,
+        f"Scanned region = {scan_max - scan_min:.1f} cm",
+        ha="center",
+        va="top",
+        fontsize=17,
+        color="#8b0000",
+        fontweight="bold",
+    )
+
+    # --------------------------------------------------------
+    # Small explanatory note
+    # --------------------------------------------------------
+    ax.text(
+        0,
+        7.45,
+        "Scale-aware Z-scan schematic: beam positions shown at their true relative locations within the 2 m HG-DREAM module",
         ha="center",
         va="center",
-        fontsize=28,
+        fontsize=18,
         fontweight="bold",
-        color="black",
     )
 
-    # Z axis
-    ax.annotate(
-        "",
-        xy=(0.94, 0.23),
-        xytext=(0.16, 0.23),
-        xycoords=ax.transAxes,
-        textcoords=ax.transAxes,
-        arrowprops=dict(arrowstyle="-|>", lw=3.0, color="black", mutation_scale=28),
-    )
+    fig.tight_layout()
 
-    ax.text(
-        0.96,
-        0.23,
-        "z",
-        transform=ax.transAxes,
-        ha="left",
-        va="center",
-        fontsize=28,
-        fontweight="bold",
-        color="black",
-    )
+    out_png = os.path.join(outdir, "z_scan_schematic_clean.png")
+    out_pdf = os.path.join(outdir, "z_scan_schematic_clean.pdf")
 
-    ax.text(
-        0.53,
-        0.12,
-        "Relative beam position",
-        transform=ax.transAxes,
-        ha="center",
-        va="center",
-        fontsize=22,
-        color="black",
-    )
-
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    fig.savefig(out_png, bbox_inches="tight")
     fig.savefig(out_pdf, bbox_inches="tight")
     plt.close(fig)
 
-    print(f"[PLOT] Saved: {out_png}")
-    print(f"[PLOT] Saved: {out_pdf}")
+    print(f"[DIAGRAM] Saved: {out_png}")
+    print(f"[DIAGRAM] Saved: {out_pdf}")
+
+
 # ============================================================
 # Main
 # ============================================================
@@ -935,58 +1396,83 @@ def resolve_files(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Make paper-level CaloX timing z-scan plots.")
+    parser = argparse.ArgumentParser(description="Make paper-level CaloX Z-scan plots.")
     parser.add_argument("--ana-files", nargs="+", default=None, help="Explicit list of input ROOT files.")
     parser.add_argument("--ana-glob", default=None, help="Glob for input ROOT files.")
     parser.add_argument("--tree", default=TREE_NAME, help="Tree name in ROOT files.")
-    parser.add_argument("--outdir", default="TiminingZscan_summary_forpaper2", help="Output directory.")
+    parser.add_argument("--outdir", default="TiminingZscan_summary_forpaper5", help="Output directory.")
     parser.add_argument("--pid", default="electron", choices=["muon", "pion", "electron", "proton"], help="PID selection.")
-    parser.add_argument("--suffix", default="_LP2_50", help="Timing suffix, e.g. _LP2_50.")
+    parser.add_argument("--suffix", default="_LP2_50", help="Timing suffix, e.g. _LP2_50. Used for branch lookup only; not printed on plots.")
     parser.add_argument("--nbins", type=int, default=100, help="Histogram bins for paper overlays.")
     parser.add_argument("--min-events", type=int, default=25, help="Minimum entries required for a fit.")
     parser.add_argument("--sci-channels", choices=["all", "selected"], default="all", help="Use all SCI channels or the selected subset from your older script.")
     parser.add_argument("--no-wc-cut", action="store_true", help="Disable wirechamber cut.")
     parser.add_argument("--no-individual", action="store_true", help="Do not save individual PNG/PDF files for every channel.")
     parser.add_argument("--run-overlay", default="run1501", help="Run substring for the 107/100/104 anchor overlay.")
+    parser.add_argument("--cache-root", default=None, help="ROOT cache containing fitted records. If omitted, a cache is written/read from the output directory.")
+    parser.add_argument("--rebuild-cache", action="store_true", help="Ignore any existing fitted-record cache and rerun the analysis.")
 
     args = parser.parse_args()
-
-    if args.ana_files is None and args.ana_glob is None:
-        raise SystemExit("[FATAL] Provide either --ana-files or --ana-glob")
 
     apply_paper_style()
     os.makedirs(args.outdir, exist_ok=True)
 
-    files = resolve_files(args)
-    if not files:
-        raise SystemExit("[FATAL] No files matched your input.")
+    families = build_families(args.sci_channels)
+    cache_root = args.cache_root or default_cache_root_path(args.outdir, args.pid, args.suffix, args.sci_channels)
 
-    print("\n[INIT] Paper-level CaloX timing z-scan plotting")
-    print(f"[INIT] Number of input files: {len(files)}")
+    print("\n[INIT] Paper-level CaloX Z-scan plotting")
     print(f"[INIT] Output directory: {args.outdir}")
     print(f"[INIT] PID: {args.pid}")
-    print(f"[INIT] Timing suffix: {args.suffix}")
+    print(f"[INIT] Timing suffix for branch lookup: {args.suffix}")
     print(f"[INIT] SCI channel mode: {args.sci_channels}")
     print(f"[INIT] Wirechamber cut: {'OFF' if args.no_wc_cut else 'ON'}")
+    print(f"[INIT] ROOT cache: {cache_root}")
 
-    families = build_families(args.sci_channels)
+    if os.path.exists(cache_root) and not args.rebuild_cache:
+        records = read_records_root_cache(cache_root)
+    else:
+        if args.ana_files is None and args.ana_glob is None:
+            raise SystemExit(
+                "[FATAL] Provide --ana-files/--ana-glob for the first run, "
+                "or provide an existing --cache-root for plot-only reruns."
+            )
 
-    records = collect_fit_records(
-        files=files,
-        tree_name=args.tree,
-        particle_type=args.pid,
-        suffix=args.suffix,
-        families=families,
-        nbins=args.nbins,
-        min_events=args.min_events,
-        use_wc_cut=(not args.no_wc_cut),
-    )
+        files = resolve_files(args)
+        if not files:
+            raise SystemExit("[FATAL] No files matched your input.")
+
+        print(f"[INIT] Number of input files: {len(files)}")
+
+        records = collect_fit_records(
+            files=files,
+            tree_name=args.tree,
+            particle_type=args.pid,
+            suffix=args.suffix,
+            families=families,
+            nbins=args.nbins,
+            min_events=args.min_events,
+            use_wc_cut=(not args.no_wc_cut),
+        )
+
+        if not records:
+            raise SystemExit("[FATAL] No successful fits were produced. Check input files, branch names, PID cuts, and windows.")
+
+        write_records_root_cache(records, cache_root)
 
     if not records:
-        raise SystemExit("[FATAL] No successful fits were produced. Check input files, branch names, PID cuts, and windows.")
+        raise SystemExit("[FATAL] No records available for plotting.")
 
     table_path = os.path.join(args.outdir, "timing_gaussian_fit_summary.csv")
     write_fit_table(records, table_path)
+
+    make_velocity_z_toa_plot(
+        records=records,
+        outdir=args.outdir,
+        pid_label=args.pid,
+        particle_type=args.pid,
+        suffix=args.suffix,
+        families=families,
+    )
 
     make_all_channel_location_overlays(
         records=records,
@@ -1006,8 +1492,10 @@ def main():
 
     make_clean_zscan_diagram(args.outdir)
 
-    print("\n[DONE] Paper-level timing z-scan outputs saved to:")
+    print("\n[DONE] Paper-level Z-scan outputs saved to:")
     print(f"       {args.outdir}")
+    print(f"[DONE] Reuse this cache for plot-only tweaks:")
+    print(f"       --cache-root {cache_root}")
 
 
 if __name__ == "__main__":
