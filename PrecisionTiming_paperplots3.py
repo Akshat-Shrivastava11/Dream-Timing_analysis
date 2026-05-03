@@ -110,7 +110,7 @@ FAMILY_COLORS = {
 # These are your hard timing windows.
 FAMILY_WINDOWS = {
     "Plastic": (-14.5, -11.5),
-    "Quartz":  (-15.0, -11.5),
+    "Quartz":  (-15.0, -12.0),
     "SCI":     (-13.5,  -9.5),
 }
 
