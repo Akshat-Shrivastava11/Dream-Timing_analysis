@@ -1,0 +1,6 @@
+Best epoch : 26
+Val AUC    : 0.8266
+Val Acc    : 0.7540
+N train    : 7771
+N val      : 1943
+Params     : 43,681

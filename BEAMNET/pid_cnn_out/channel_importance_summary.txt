@@ -1,0 +1,15 @@
+Channel importance summary
+==========================
+
+Baseline AUC = 0.826642
+Baseline Acc = 0.753989
+
+Permutation ranking, preferred:
+  1. Scintillator: Delta AUC = 0.157528, AUC after shuffle = 0.669113
+  2. Quartz: Delta AUC = 0.086086, AUC after shuffle = 0.740556
+  3. Plastic: Delta AUC = 0.050113, AUC after shuffle = 0.776528
+
+Zero-ablation ranking:
+  1. Scintillator: Delta AUC = 0.053037, AUC after zeroing = 0.773605
+  2. Quartz: Delta AUC = 0.043670, AUC after zeroing = 0.782972
+  3. Plastic: Delta AUC = 0.037282, AUC after zeroing = 0.789359
