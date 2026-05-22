@@ -35,7 +35,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import Rectangle, FancyArrowPatch
 import mplhep as hep
-
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 plt.style.use(hep.style.CMS)
 
 # ============================================================
@@ -1352,6 +1353,641 @@ def make_clean_zscan_diagram(outdir: str):
     print(f"[DIAGRAM] Saved: {out_pdf}")
 
 
+
+
+
+
+def make_channel_time_heatmap(
+    ax,
+    fam_records: List[FitRecord],
+    anchor_mu: float,
+    calibrated: bool,
+    family_title: str,
+    family_color: str,
+):
+    """
+    Make channel-vs-time heatmap from fitted FitRecord histograms.
+
+    Rows = channels
+    Columns = TOA bins
+
+    If calibrated=True:
+        x-axis is shifted by mu_anchor - mu_channel.
+    """
+
+    fam_records = sorted(fam_records, key=lambda r: int(r.channel))
+
+    all_xmins = []
+    all_xmaxs = []
+    all_bin_widths = []
+
+    shifted_centers_list = []
+    hist_list = []
+    labels = []
+
+    for r in fam_records:
+        shift = anchor_mu - r.mu if calibrated else 0.0
+        centers = np.asarray(r.centers, dtype=float) + shift
+        hist = np.asarray(r.hist_norm, dtype=float)
+
+        if len(centers) < 2 or len(hist) != len(centers):
+            continue
+
+        dx = np.median(np.diff(centers))
+        all_bin_widths.append(dx)
+        all_xmins.append(centers[0] - 0.5 * dx)
+        all_xmaxs.append(centers[-1] + 0.5 * dx)
+
+        shifted_centers_list.append(centers)
+        hist_list.append(hist)
+        labels.append(r.channel)
+
+    if not hist_list:
+        ax.text(
+            0.5,
+            0.5,
+            "No usable channels",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=24,
+        )
+        return
+
+    xmin = min(all_xmins)
+    xmax = max(all_xmaxs)
+
+    # Build common x-grid so shifted histograms can still be imshow'ed.
+    nbins = max(len(h) for h in hist_list)
+    x_common = np.linspace(xmin, xmax, nbins)
+
+    heat = []
+    for centers, hist in zip(shifted_centers_list, hist_list):
+        interp = np.interp(x_common, centers, hist, left=0.0, right=0.0)
+        heat.append(interp)
+
+    heat = np.asarray(heat)
+
+    im = ax.imshow(
+        heat,
+        aspect="auto",
+        origin="lower",
+        interpolation="nearest",
+        extent=[xmin, xmax, -0.5, len(labels) - 0.5],
+        vmin=0.0,
+        vmax=1.0,
+    )
+
+    ax.axvline(
+        anchor_mu,
+        color="white",
+        linestyle="--",
+        linewidth=2.5,
+    )
+
+    mode_label = "Post-calibration" if calibrated else "Pre-calibration"
+    xlabel = "Calibrated Time of Arrival [ns]" if calibrated else "Time of Arrival [ns]"
+
+    ax.set_title(
+        f"{family_title}: {mode_label} timing heatmap",
+        fontsize=30,
+        loc="left",
+    )
+    ax.set_xlabel(xlabel, fontsize=28)
+    ax.set_ylabel("Channel", fontsize=28)
+
+    ax.tick_params(axis="both", labelsize=22)
+    ax.grid(False)
+
+    if len(labels) <= 70:
+        ax.set_yticks(np.arange(len(labels)))
+        ax.set_yticklabels(labels, fontsize=14)
+    else:
+        step = max(1, len(labels) // 25)
+        yticks = np.arange(0, len(labels), step)
+        ax.set_yticks(yticks)
+        ax.set_yticklabels([labels[i] for i in yticks], fontsize=14)
+
+    ax.text(
+        0.98,
+        0.96,
+        rf"Target $\mu$ = {anchor_mu:.2f} ns"
+        "\n"
+        f"N channels = {len(labels)}",
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=22,
+        bbox=dict(
+            boxstyle="round,pad=0.30",
+            facecolor="white",
+            edgecolor="none",
+            alpha=0.85,
+        ),
+    )
+
+    return im
+def make_reference_timing_calibration_pdf(
+    records: List[FitRecord],
+    outdir: str,
+    particle_type,
+    suffix: str,
+    run_substring: str = "run1501",
+    pdf_name: str = "timing_calibration_reference_only.pdf",
+    anchor_channels: Optional[Dict[str, str]] = None,
+):
+    """
+    Make one multipage PDF demonstrating timing calibration/alignment
+    using only one reference run/file.
+
+    This uses the existing FitRecord objects, so it works both from:
+      - a fresh ROOT-file processing run
+      - an existing fitted-record cache
+
+    For each family:
+      raw timing histograms are shown as measured
+      calibrated histograms are shifted so that each channel peak aligns
+      to the family anchor channel peak.
+
+    Calibration convention:
+        shift_ch = mu_anchor - mu_ch
+        t_calibrated = t_raw + shift_ch
+    """
+
+    if not records:
+        print("[CALIB] No records available. Skipping calibration PDF.")
+        return
+
+    os.makedirs(outdir, exist_ok=True)
+
+    if anchor_channels is None:
+        anchor_channels = {
+            "SCI": "107",
+            "Plastic": "100",
+            "Quartz": "104",
+        }
+
+    pdf_path = os.path.join(outdir, pdf_name)
+
+    ref_records = [
+        r for r in records
+        if run_substring in r.run_label
+        and np.isfinite(r.mu)
+        and np.isfinite(r.sigma)
+        and r.n > 0
+    ]
+
+    if not ref_records:
+        print(f"[CALIB] No records found for reference run substring: {run_substring}")
+        print("[CALIB] Skipping calibration PDF.")
+        return
+
+    print("\n[CALIB] Making reference timing calibration/alignment PDF")
+    print(f"[CALIB] Reference run substring: {run_substring}")
+    print(f"[CALIB] Number of reference records: {len(ref_records)}")
+    print(f"[CALIB] Output PDF: {pdf_path}")
+
+    family_order = ["SCI", "Plastic", "Quartz"]
+
+    with PdfPages(pdf_path) as pdf:
+
+        # ------------------------------------------------------------
+        # Cover page
+        # ------------------------------------------------------------
+        fig, ax = plt.subplots(figsize=(13, 9))
+        ax.axis("off")
+
+        run_labels = sorted(set(r.run_label for r in ref_records))
+        run_text = "\n".join(run_labels[:6])
+        if len(run_labels) > 6:
+            run_text += f"\n... plus {len(run_labels) - 6} more"
+
+        cover_text = (
+            "Timing Calibration Demonstration\n\n"
+            "Reference file/run only\n\n"
+            f"Reference selector: {run_substring}\n\n"
+            f"{run_text}\n\n"
+            "Each channel is shifted to the family anchor channel:\n\n"
+            r"$\Delta t_{\mathrm{ch}} = \mu_{\mathrm{anchor}} - \mu_{\mathrm{ch}}$"
+            "\n\n"
+            r"$t_{\mathrm{calibrated}} = t_{\mathrm{raw}} + \Delta t_{\mathrm{ch}}$"
+            "\n\n"
+            "Goal: show that channel timing peaks align after calibration."
+        )
+
+        ax.text(
+            0.5,
+            0.52,
+            cover_text,
+            ha="center",
+            va="center",
+            fontsize=24,
+            linespacing=1.45,
+        )
+
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+        # ------------------------------------------------------------
+        # Per-family pages
+        # ------------------------------------------------------------
+        for fam in family_order:
+            fam_records = [
+                r for r in ref_records
+                if r.family == fam
+            ]
+
+            if not fam_records:
+                print(f"[CALIB] No reference records for {fam}. Skipping.")
+                continue
+
+            fam_records = sorted(fam_records, key=lambda r: int(r.channel))
+
+            anchor_ch = anchor_channels.get(fam)
+            anchor_matches = [r for r in fam_records if r.channel == anchor_ch]
+
+            if anchor_matches:
+                anchor_record = sorted(anchor_matches, key=lambda r: r.n, reverse=True)[0]
+                anchor_mu = anchor_record.mu
+                anchor_label = f"anchor ch {anchor_record.channel}"
+            else:
+                anchor_mu = float(np.nanmedian([r.mu for r in fam_records]))
+                anchor_label = "family median"
+
+            raw_mus = np.array([r.mu for r in fam_records], dtype=float)
+            calibrated_mus = np.array([anchor_mu for _ in fam_records], dtype=float)
+            shifts = np.array([anchor_mu - r.mu for r in fam_records], dtype=float)
+
+            raw_spread = np.nanstd(raw_mus)
+            calibrated_spread = np.nanstd(raw_mus + shifts)
+
+            family_title = FAMILY_DISPLAY_NAMES.get(fam, fam)
+            family_color = FAMILY_COLORS.get(fam, "black")
+
+            # --------------------------------------------------------
+            # Page 1: Raw overlays
+            # --------------------------------------------------------
+            fig, ax = plt.subplots(figsize=(20, 15))
+
+            first = fam_records[0]
+            ax.set_xlim(*first.xlim)
+            ax.set_ylim(0.0, 1.55)
+
+            setup_paper_axes(
+                ax,
+                "Time of Arrival [ns]",
+                "Normalized Events",
+                particle_type,
+                suffix,
+                llabel="Timing calibration",
+            )
+
+            for r in fam_records:
+                ax.step(
+                    r.centers,
+                    r.hist_norm,
+                    where="mid",
+                    lw=1.8,
+                    alpha=0.28,
+                    color=family_color,
+                )
+                ax.plot(
+                    r.x_smooth,
+                    r.y_gauss,
+                    lw=1.8,
+                    alpha=0.45,
+                    color=family_color,
+                )
+
+            ax.axvline(
+                anchor_mu,
+                color="black",
+                linestyle="--",
+                linewidth=3.0,
+                label=rf"{anchor_label}: $\mu$ = {anchor_mu:.2f} ns",
+            )
+
+            ax.text(
+                0.98,
+                0.96,
+                f"{family_title}\nRaw reference timing\nN channels = {len(fam_records)}",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=30,
+                bbox=dict(
+                    boxstyle="round,pad=0.30",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.86,
+                ),
+            )
+
+            ax.text(
+                0.04,
+                0.88,
+                rf"Raw peak spread: $\sigma_\mu$ = {raw_spread:.3f} ns",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=28,
+                bbox=dict(
+                    boxstyle="round,pad=0.30",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.86,
+                ),
+            )
+
+            leg = ax.legend(
+                loc="upper right",
+                bbox_to_anchor=(0.98, 0.78),
+                frameon=True,
+                framealpha=0.88,
+                facecolor="white",
+                edgecolor="none",
+                fontsize=24,
+            )
+            style_legend(leg)
+
+            fig.subplots_adjust(left=0.10, right=0.98, top=0.92, bottom=0.16)
+            pdf.savefig(fig, dpi=220)
+            plt.close(fig)
+
+            # --------------------------------------------------------
+            # Page 2: Calibrated overlays
+            # --------------------------------------------------------
+            fig, ax = plt.subplots(figsize=(20, 15))
+
+            ax.set_xlim(*first.xlim)
+            ax.set_ylim(0.0, 1.55)
+
+            setup_paper_axes(
+                ax,
+                "Calibrated Time of Arrival [ns]",
+                "Normalized Events",
+                particle_type,
+                suffix,
+                llabel="Timing calibration",
+            )
+
+            for r in fam_records:
+                shift = anchor_mu - r.mu
+
+                ax.step(
+                    r.centers + shift,
+                    r.hist_norm,
+                    where="mid",
+                    lw=1.8,
+                    alpha=0.28,
+                    color=family_color,
+                )
+                ax.plot(
+                    r.x_smooth + shift,
+                    r.y_gauss,
+                    lw=1.8,
+                    alpha=0.45,
+                    color=family_color,
+                )
+
+            ax.axvline(
+                anchor_mu,
+                color="black",
+                linestyle="--",
+                linewidth=3.0,
+                label=rf"aligned target: $\mu$ = {anchor_mu:.2f} ns",
+            )
+
+            ax.text(
+                0.98,
+                0.96,
+                f"{family_title}\nAfter timing alignment\nN channels = {len(fam_records)}",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=30,
+                bbox=dict(
+                    boxstyle="round,pad=0.30",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.86,
+                ),
+            )
+
+            ax.text(
+                0.04,
+                0.88,
+                rf"Calibrated peak spread: $\sigma_\mu$ = {calibrated_spread:.3f} ns",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=28,
+                bbox=dict(
+                    boxstyle="round,pad=0.30",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.86,
+                ),
+            )
+
+            leg = ax.legend(
+                loc="upper right",
+                bbox_to_anchor=(0.98, 0.78),
+                frameon=True,
+                framealpha=0.88,
+                facecolor="white",
+                edgecolor="none",
+                fontsize=24,
+            )
+            style_legend(leg)
+
+            fig.subplots_adjust(left=0.10, right=0.98, top=0.92, bottom=0.16)
+            pdf.savefig(fig, dpi=220)
+            plt.close(fig)
+
+            # --------------------------------------------------------
+            # Page 3: channel-by-channel modes and shifts
+            # --------------------------------------------------------
+            fig, ax = plt.subplots(figsize=(20, 10))
+
+            x = np.arange(len(fam_records))
+            labels = [r.channel for r in fam_records]
+
+            ax.plot(
+                x,
+                raw_mus,
+                "o",
+                markersize=8,
+                label="Raw fitted peak",
+                color=family_color,
+                alpha=0.85,
+            )
+
+            ax.plot(
+                x,
+                raw_mus + shifts,
+                "s",
+                markersize=7,
+                label="After calibration",
+                color="black",
+                alpha=0.85,
+            )
+
+            ax.axhline(
+                anchor_mu,
+                color="black",
+                linestyle="--",
+                linewidth=2.5,
+                label=rf"Target = {anchor_mu:.2f} ns",
+            )
+
+            ax.set_title(
+                f"{family_title}: channel timing-peak alignment",
+                fontsize=30,
+                loc="left",
+            )
+            ax.set_xlabel("Channel", fontsize=28)
+            ax.set_ylabel("Fitted peak time [ns]", fontsize=28)
+            ax.tick_params(axis="both", labelsize=22)
+            ax.grid(False)
+
+            if len(labels) <= 70:
+                ax.set_xticks(x)
+                ax.set_xticklabels(labels, rotation=90, fontsize=15)
+
+            ax.text(
+                0.02,
+                0.96,
+                rf"Raw spread: $\sigma_\mu$ = {raw_spread:.3f} ns"
+                "\n"
+                rf"After alignment: $\sigma_\mu$ = {calibrated_spread:.3f} ns",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=22,
+                bbox=dict(
+                    boxstyle="round,pad=0.30",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.88,
+                ),
+            )
+
+            leg = ax.legend(
+                loc="upper right",
+                frameon=True,
+                framealpha=0.88,
+                facecolor="white",
+                edgecolor="none",
+                fontsize=20,
+            )
+            style_legend(leg)
+
+            fig.tight_layout()
+            pdf.savefig(fig, dpi=220)
+            plt.close(fig)
+
+            # --------------------------------------------------------
+            # Page 4: required channel shifts
+            # --------------------------------------------------------
+            fig, ax = plt.subplots(figsize=(20, 10))
+
+            ax.axhline(0.0, color="black", linewidth=2.0)
+            ax.plot(
+                x,
+                shifts,
+                "o",
+                markersize=8,
+                color=family_color,
+                alpha=0.85,
+            )
+
+            ax.set_title(
+                f"{family_title}: timing offsets needed for calibration",
+                fontsize=30,
+                loc="left",
+            )
+            ax.set_xlabel("Channel", fontsize=28)
+            ax.set_ylabel(r"Applied timing shift $\Delta t$ [ns]", fontsize=28)
+            ax.tick_params(axis="both", labelsize=22)
+            ax.grid(False)
+
+            if len(labels) <= 70:
+                ax.set_xticks(x)
+                ax.set_xticklabels(labels, rotation=90, fontsize=15)
+
+            ax.text(
+                0.02,
+                0.96,
+                rf"$\Delta t_{{ch}} = \mu_{{anchor}} - \mu_{{ch}}$"
+                "\n"
+                rf"Mean shift = {np.nanmean(shifts):+.3f} ns"
+                "\n"
+                rf"Shift RMS = {np.nanstd(shifts):.3f} ns",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=22,
+                bbox=dict(
+                    boxstyle="round,pad=0.30",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.88,
+                ),
+            )
+
+            fig.tight_layout()
+            pdf.savefig(fig, dpi=220)
+            plt.close(fig)
+            # --------------------------------------------------------
+            # Page 5: pre-calibration heatmap
+            # --------------------------------------------------------
+            fig, ax = plt.subplots(figsize=(20, 12))
+
+            im = make_channel_time_heatmap(
+                ax=ax,
+                fam_records=fam_records,
+                anchor_mu=anchor_mu,
+                calibrated=False,
+                family_title=family_title,
+                family_color=family_color,
+            )
+
+            if im is not None:
+                cbar = fig.colorbar(im, ax=ax, pad=0.015)
+                cbar.set_label("Normalized events", fontsize=24)
+                cbar.ax.tick_params(labelsize=20)
+
+            fig.tight_layout()
+            pdf.savefig(fig, dpi=220)
+            plt.close(fig)
+
+            # --------------------------------------------------------
+            # Page 6: post-calibration heatmap
+            # --------------------------------------------------------
+            fig, ax = plt.subplots(figsize=(20, 12))
+
+            im = make_channel_time_heatmap(
+                ax=ax,
+                fam_records=fam_records,
+                anchor_mu=anchor_mu,
+                calibrated=True,
+                family_title=family_title,
+                family_color=family_color,
+            )
+
+            if im is not None:
+                cbar = fig.colorbar(im, ax=ax, pad=0.015)
+                cbar.set_label("Normalized events", fontsize=24)
+                cbar.ax.tick_params(labelsize=20)
+
+            fig.tight_layout()
+            pdf.savefig(fig, dpi=220)
+            plt.close(fig)
+    print(f"[CALIB] Saved: {pdf_path}")
+
+
+
 # ============================================================
 # Main
 # ============================================================
@@ -1466,6 +2102,17 @@ def main():
         run_substring=args.run_overlay,
     )
 
+
+    make_reference_timing_calibration_pdf(
+        records=records,
+        outdir=args.outdir,
+        particle_type=args.pid,
+        suffix=args.suffix,
+        run_substring=args.run_overlay,
+        pdf_name=f"timing_calibration_reference_only_{args.run_overlay}.pdf",
+    )
+
+    make_clean_zscan_diagram(args.outdir)
     make_clean_zscan_diagram(args.outdir)
 
     print("\n[DONE] Paper-level Z-scan outputs saved to:")
