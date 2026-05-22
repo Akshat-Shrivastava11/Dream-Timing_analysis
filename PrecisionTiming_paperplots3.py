@@ -14,7 +14,7 @@ What this script makes:
   6. A clean z-scan schematic diagram.
 
 Example:
- python PrecisionTiming_paperplots3.py   --cache-root /lustre/research/hep/akshriva/Dream-Timing/TiminingZscan_summary_forpaper5/fit_records_cache_electron_LP2_50_all.root   --outdir /lustre/research/hep/akshriva/Dream-Timing/TiminingZscan_summary_forpaper6_replot   --pid electron   --suffix _LP2_50   --sci-channels selected
+python PrecisionTiming_paperplots3.py   --cache-root /lustre/research/hep/akshriva/Dream-Timing/TiminingZscan_summary_forpaper5/fit_records_cache_electron_LP2_50_all.root   --outdir /lustre/research/hep/akshriva/Dream-Timing/TiminingZscan_summary_forpaper6_replot   --pid electron   --suffix _LP2_50   --sci-channels selected
 """
 
 import os
@@ -35,8 +35,6 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import Rectangle, FancyArrowPatch
 import mplhep as hep
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 plt.style.use(hep.style.CMS)
 
 # ============================================================
@@ -102,13 +100,23 @@ FAMILY_DISPLAY_NAMES = {
     "SCI":     "SCSF-81J (Scintillator)",
 }
 
+# ── Colors sampled from uploaded swatches ─────────────────────────────────────
+# 3-strip swatch (run1501 / 3-material overlay): red / orange-gold / blue
 FAMILY_COLORS = {
-    "Plastic": "#d62728",
-    "Quartz":  "#1f77b4",
-    "SCI":     "#2ca02c",
+    "Plastic": "#e42536",
+    "Quartz":  "#f89c20",
+    "SCI":     "#5790fc",
 }
 
-# These are your hard timing windows.
+# 5-color z-scan palette (gray / purple / red / orange / blue)
+
+_ZSCAN_PALETTE = [
+    "#9c9ca1",  # gray
+    "#7a21dd",  # purple
+    "#e42536",  # red
+    "#f89c20",  # orange
+    "#5790fc",  # blue
+]
 FAMILY_WINDOWS = {
     "Plastic": (-14.5, -11.5),
     "Quartz":  (-15.0, -12.0),
@@ -201,9 +209,6 @@ class FitRecord:
 # ============================================================
 # Style helpers
 # ============================================================
-
-# Big paper/slide-friendly font sizes.
-# These are intentionally large because the plots are meant for talks/paper figures.
 AXIS_LABEL_FONTSIZE   = 38
 TICK_LABEL_FONTSIZE   = 32
 CMS_LABEL_FONTSIZE    = 34
@@ -218,7 +223,6 @@ def apply_paper_style():
         "figure.figsize": (16, 11),
         "figure.dpi": 120,
         "savefig.dpi": 300,
-
         "font.size": 30,
         "axes.labelsize": AXIS_LABEL_FONTSIZE,
         "axes.titlesize": TITLE_FONTSIZE,
@@ -228,20 +232,16 @@ def apply_paper_style():
         "font.weight": "normal",
         "axes.labelweight": "normal",
         "axes.titleweight": "normal",
-
         "lines.linewidth": 3.5,
         "axes.linewidth": 1.8,
-
         "xtick.major.size": 12,
         "ytick.major.size": 12,
         "xtick.minor.size": 7,
         "ytick.minor.size": 7,
-
         "xtick.major.width": 1.8,
         "ytick.major.width": 1.8,
         "xtick.minor.width": 1.4,
         "ytick.minor.width": 1.4,
-
         "xtick.direction": "in",
         "ytick.direction": "in",
         "xtick.top": True,
@@ -253,7 +253,6 @@ def particle_display_name(particle_type: Optional[str]) -> str:
     if particle_type is None:
         return "All particles"
     if particle_type.lower() == "electron":
-        #return "Positron"
         return r"$e^{+}$"
     return particle_type.capitalize()
 
@@ -267,53 +266,19 @@ def suffix_display_name(suffix: str) -> str:
 
 
 def setup_paper_axes(ax, xlabel, ylabel, particle_type, suffix, llabel="Z-Scan"):
-    """
-    Shared large-label CMS-style axis formatting for all paper plots.
-    This copies the older velocity-plot aesthetic, but scales the labels up.
-    """
     ax.set_xlabel(xlabel, fontsize=AXIS_LABEL_FONTSIZE, fontweight="normal", loc="right")
-    ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONTSIZE, fontweight="normal", loc="top") 
-
-    ax.tick_params(
-        axis="both",
-        which="major",
-        labelsize=TICK_LABEL_FONTSIZE,
-        length=12,
-        width=1.8,
-        direction="in",
-        top=True,
-        right=True,
-    )
-    ax.tick_params(
-        axis="both",
-        which="minor",
-        length=7,
-        width=1.4,
-        direction="in",
-        top=True,
-        right=True,
-    )
-
+    ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONTSIZE, fontweight="normal", loc="top")
+    ax.tick_params(axis="both", which="major",
+                   labelsize=TICK_LABEL_FONTSIZE, length=12, width=1.8,
+                   direction="in", top=True, right=True)
+    ax.tick_params(axis="both", which="minor",
+                   length=7, width=1.4, direction="in", top=True, right=True)
     ax.minorticks_on()
-    #ax.grid(True, linestyle=":", alpha=0.30)
     ax.grid(False)
-    # Keep the right label clean: no LP2_50 suffix in the plot header.
     rlabel = f"40 GeV {particle_display_name(particle_type)}"
-    hep.cms.label(
-        ax=ax,
-        exp="CaloX",
-        data=False,
-        llabel=r"$\it{Z\!-\!Scan}$",
-        rlabel=rlabel,
-        fontsize=CMS_LABEL_FONTSIZE,
-    )
-
-    # # Make all tick labels and CMS labels bold for readability.
-    # for tick_label in ax.get_xticklabels() + ax.get_yticklabels():
-    #     tick_label.set_fontweight("bold")
-    # for text in ax.texts:
-    #     text.set_fontweight("bold")
-    #     text.set_fontstyle("normal")
+    hep.cms.label(ax=ax, exp="CaloX", data=False,
+                  llabel=r"$\it{Z\!-\!Scan}$", rlabel=rlabel,
+                  fontsize=CMS_LABEL_FONTSIZE)
 
 
 def safe_name(s: str) -> str:
@@ -321,7 +286,6 @@ def safe_name(s: str) -> str:
 
 
 def style_legend(legend):
-    """Bold legend text and title while keeping the legend frameless."""
     if legend is None:
         return
     for text in legend.get_texts():
@@ -331,7 +295,6 @@ def style_legend(legend):
         title.set_fontweight("normal")
 
 
-
 # ============================================================
 # ROOT cache helpers
 # ============================================================
@@ -339,30 +302,20 @@ CACHE_FAMILY_NAMES = ["Plastic", "Quartz", "SCI"]
 
 
 def default_cache_root_path(outdir: str, pid: str, suffix: str, sci_channels: str) -> str:
-    """Default cache name for fitted records so plotting can be rerun quickly."""
     suffix_tag = safe_name(suffix.strip("_") or "nosuffix")
     return os.path.join(outdir, f"fit_records_cache_{pid}_{suffix_tag}_{sci_channels}.root")
 
 
 def write_records_root_cache(records: List[FitRecord], cache_root: str):
-    """Write fitted plot inputs to a ROOT file using uproot.
-
-    This stores the fit outputs and the arrays needed for plotting, so later
-    styling-only changes do not require reopening the large analysis ROOT files.
-    A small JSON sidecar stores string lookups for run/file names.
-    """
     if not records:
         print("[CACHE] No records to cache.")
         return
-
     os.makedirs(os.path.dirname(cache_root), exist_ok=True)
-
     run_labels = sorted({r.run_label for r in records})
     file_paths = sorted({r.file_path for r in records})
     run_to_code = {s: i for i, s in enumerate(run_labels)}
     file_to_code = {s: i for i, s in enumerate(file_paths)}
     fam_to_code = {s: i for i, s in enumerate(CACHE_FAMILY_NAMES)}
-
     try:
         with uproot.recreate(cache_root) as fout:
             fout["fit_records"] = {
@@ -384,19 +337,10 @@ def write_records_root_cache(records: List[FitRecord], cache_root: str):
                 "x_smooth": ak.Array([np.asarray(r.x_smooth, dtype=np.float64) for r in records]),
                 "y_gauss": ak.Array([np.asarray(r.y_gauss, dtype=np.float64) for r in records]),
             }
-
         meta_path = cache_root.replace(".root", "_metadata.json")
         with open(meta_path, "w") as f:
-            json.dump(
-                {
-                    "run_labels": run_labels,
-                    "file_paths": file_paths,
-                    "family_names": CACHE_FAMILY_NAMES,
-                },
-                f,
-                indent=2,
-            )
-
+            json.dump({"run_labels": run_labels, "file_paths": file_paths,
+                       "family_names": CACHE_FAMILY_NAMES}, f, indent=2)
         print(f"[CACHE] Saved ROOT cache: {cache_root}")
         print(f"[CACHE] Saved metadata:   {meta_path}")
     except Exception as e:
@@ -404,53 +348,39 @@ def write_records_root_cache(records: List[FitRecord], cache_root: str):
 
 
 def read_records_root_cache(cache_root: str) -> List[FitRecord]:
-    """Read fitted plot inputs from the ROOT cache."""
     meta_path = cache_root.replace(".root", "_metadata.json")
     meta = {}
     if os.path.exists(meta_path):
         with open(meta_path, "r") as f:
             meta = json.load(f)
-
     family_names = meta.get("family_names", CACHE_FAMILY_NAMES)
     run_labels = meta.get("run_labels", [])
     file_paths = meta.get("file_paths", [])
-
     with uproot.open(cache_root) as fin:
         arr = fin["fit_records"].arrays(library="ak")
-
     records: List[FitRecord] = []
-    n_records = len(arr["record_id"])
-
-    for i in range(n_records):
+    for i in range(len(arr["record_id"])):
         fam_code = int(arr["family_code"][i])
         run_code = int(arr["run_code"][i])
         file_code = int(arr["file_code"][i])
         channel_int = int(arr["channel_int"][i])
-
         family = family_names[fam_code] if 0 <= fam_code < len(family_names) else "Unknown"
         run_label = run_labels[run_code] if 0 <= run_code < len(run_labels) else f"run_code_{run_code}"
         file_path = file_paths[file_code] if 0 <= file_code < len(file_paths) else f"file_code_{file_code}"
-
         records.append(FitRecord(
-            file_path=file_path,
-            run_label=run_label,
-            z_mm=float(arr["z_mm"][i]),
-            family=family,
-            channel=f"{channel_int:03d}",
-            n=int(arr["n"][i]),
-            mu=float(arr["mu"][i]),
-            sigma=float(arr["sigma"][i]),
-            fwhm=float(arr["fwhm"][i]),
-            time_err=float(arr["time_err"][i]),
+            file_path=file_path, run_label=run_label,
+            z_mm=float(arr["z_mm"][i]), family=family, channel=f"{channel_int:03d}",
+            n=int(arr["n"][i]), mu=float(arr["mu"][i]), sigma=float(arr["sigma"][i]),
+            fwhm=float(arr["fwhm"][i]), time_err=float(arr["time_err"][i]),
             xlim=(float(arr["xlim0"][i]), float(arr["xlim1"][i])),
             centers=np.asarray(arr["centers"][i], dtype=float),
             hist_norm=np.asarray(arr["hist_norm"][i], dtype=float),
             x_smooth=np.asarray(arr["x_smooth"][i], dtype=float),
             y_gauss=np.asarray(arr["y_gauss"][i], dtype=float),
         ))
-
     print(f"[CACHE] Loaded {len(records)} records from: {cache_root}")
     return records
+
 
 # ============================================================
 # Selection and timing helpers
@@ -470,10 +400,10 @@ def get_service_drs_cut(service_drs: str) -> tuple:
 
 def get_particle_selection(particle_type: str) -> dict:
     selections = {
-        "muon": {"TTUMuonVeto": True, "PSD": False},
-        "pion": {"TTUMuonVeto": False, "PSD": False, "Cer474": True, "Cer519": True, "Cer537": True},
-        "electron": {"TTUMuonVeto": False, "PSD": True, "Cer474": True, "Cer519": True, "Cer537": True},
-        "proton": {"TTUMuonVeto": False, "PSD": False, "Cer474": False, "Cer519": False, "Cer537": False},
+        "muon":     {"TTUMuonVeto": True, "PSD": False},
+        "pion":     {"TTUMuonVeto": False, "PSD": False, "Cer474": True, "Cer519": True, "Cer537": True},
+        "electron": {"TTUMuonVeto": False, "PSD": True,  "Cer474": True, "Cer519": True, "Cer537": True},
+        "proton":   {"TTUMuonVeto": False, "PSD": False, "Cer474": False, "Cer519": False, "Cer537": False},
     }
     return selections.get(particle_type.lower(), {})
 
@@ -481,27 +411,22 @@ def get_particle_selection(particle_type: str) -> dict:
 def compute_pid_mask(tree, particle_type):
     if particle_type is None:
         return None
-
     requirements = get_particle_selection(particle_type)
     if not requirements:
         return None
-
     n_entries = tree.num_entries
     final_mask = np.ones(n_entries, dtype=bool)
     available_keys = set(tree.keys())
-
     for det, must_fire in requirements.items():
         branch_name = PID_BRANCH_MAP.get(det)
         if not branch_name or branch_name not in available_keys:
-            print(f"    [WARN] PID branch missing for {det}: {branch_name}. Skipping this PID requirement.")
+            print(f"    [WARN] PID branch missing for {det}: {branch_name}. Skipping.")
             continue
-
         ts_min, ts_max, val_cut, method = get_service_drs_cut(det)
         try:
             waveforms = tree[branch_name].array(library="ak")
             if method != "Sum":
                 continue
-
             baseline = ak.mean(waveforms[:, :30], axis=1)
             waveforms_blsub = waveforms - baseline
             window_sum = ak.sum(waveforms_blsub[:, int(ts_min):int(ts_max)], axis=1)
@@ -510,7 +435,6 @@ def compute_pid_mask(tree, particle_type):
         except Exception as e:
             print(f"    [WARN] PID cut failed for {det}: {e}")
             continue
-
     return final_mask
 
 
@@ -519,7 +443,6 @@ def compute_adc_mask(tree, code_str):
     drs_br = f"DRS_Board{b}_Group{g}_Channel{c}"
     if drs_br not in tree.keys():
         return np.ones(tree.num_entries, dtype=bool)
-
     waves = tree[drs_br].array(library="ak")
     baseline = ak.mean(waves[:, :30], axis=1)
     waves_blsub = waves - baseline
@@ -540,34 +463,25 @@ def get_hit_times_vectorized(events):
 def compute_wc_mask(tree, limit=WC_X_CUT):
     br_l1 = WC_CHANNELS["L1"]
     br_r1 = WC_CHANNELS["R1"]
-
     if br_l1 not in tree.keys() or br_r1 not in tree.keys():
-        print("    [WARN] Wirechamber waveform branches missing. Skipping WC cut.")
+        print("    [WARN] Wirechamber branches missing. Skipping WC cut.")
         return np.ones(tree.num_entries, dtype=bool)
-
     L1 = ak.to_numpy(tree[br_l1].array(library="ak"))
     R1 = ak.to_numpy(tree[br_r1].array(library="ak"))
     L1_t = get_hit_times_vectorized(L1)
     R1_t = get_hit_times_vectorized(R1)
-    x_positions = L1_t - R1_t
-    return np.abs(x_positions) < limit
+    return np.abs(L1_t - R1_t) < limit
 
 
 def get_z_position(run_label):
-    # Relative z map used in the Z-scan.
     if "run1513" in run_label:
         if "192918" in run_label:
             return 163.5
         if "194230" in run_label:
             return -182.3
-
     match = re.search(r"run(\d+)", run_label)
     run_num = int(match.group(1)) if match else None
-    z_map = {
-        1501:  50.0,
-        1507:   0.0,
-        1511: -50.0,
-    }
+    z_map = {1501: 50.0, 1507: 0.0, 1511: -50.0}
     return z_map.get(run_num, -999.0)
 
 
@@ -581,23 +495,19 @@ def run_label_from_path(path: str) -> str:
 
 
 def get_tfinal_3mm(tree, b, g, c, suffix):
-    """
-    t_final(b,g,c) = [t(b,g,c) - t(b,g,8)] - [t(0,3,7) - t(0,3,8)]
-    """
     br_sig     = f"DRS_Board{b}_Group{g}_Channel{c}{suffix}"
     br_sig_ref = f"DRS_Board{b}_Group{g}_Channel8{suffix}"
     br_trg     = f"DRS_Board0_Group3_Channel7{suffix}"
     br_trg_ref = f"DRS_Board0_Group3_Channel8{suffix}"
-
     keys = set(tree.keys())
     if any(br not in keys for br in [br_sig, br_sig_ref, br_trg, br_trg_ref]):
         return None
-
     arr_sig     = tree[br_sig].array(library="np")
     arr_sig_ref = tree[br_sig_ref].array(library="np")
     arr_trg     = tree[br_trg].array(library="np")
     arr_trg_ref = tree[br_trg_ref].array(library="np")
     return (arr_sig - arr_sig_ref) - (arr_trg - arr_trg_ref)
+
 
 # ============================================================
 # Fit helpers
@@ -621,12 +531,10 @@ def fit_timing_distribution(arr_time, xlim, nbins):
     mode, _, h = mode_from_hist(arr_time, bins)
     if h.max() <= 0:
         return None
-
     h_norm = h / h.max()
     arr_std = float(np.std(arr_time))
     if not np.isfinite(arr_std) or arr_std <= 0:
         arr_std = 0.2
-
     try:
         p0 = [mode, arr_std]
         bounds = ([xlim[0] - 2.0, 0.001], [xlim[1] + 2.0, 10.0])
@@ -636,22 +544,12 @@ def fit_timing_distribution(arr_time, xlim, nbins):
     except Exception:
         mu = float(mode)
         sigma = arr_std
-
     x_smooth = np.linspace(xlim[0], xlim[1], 600)
     y_gauss = gaussian_peak_1(x_smooth, mu, sigma)
     fwhm = 2.355 * sigma
     time_err = sigma / np.sqrt(len(arr_time))
-
-    return {
-        "centers": centers,
-        "hist_norm": h_norm,
-        "mu": mu,
-        "sigma": sigma,
-        "fwhm": fwhm,
-        "time_err": time_err,
-        "x_smooth": x_smooth,
-        "y_gauss": y_gauss,
-    }
+    return {"centers": centers, "hist_norm": h_norm, "mu": mu, "sigma": sigma,
+            "fwhm": fwhm, "time_err": time_err, "x_smooth": x_smooth, "y_gauss": y_gauss}
 
 
 def sorted_files(paths):
@@ -664,24 +562,23 @@ def sorted_files(paths):
         return r, ts, b
     return sorted(paths, key=key)
 
+
 # ============================================================
 # Collect all Gaussian fits
 # ============================================================
-def collect_fit_records(files, tree_name, particle_type, suffix, families, nbins, min_events, use_wc_cut=True):
+def collect_fit_records(files, tree_name, particle_type, suffix, families,
+                        nbins, min_events, use_wc_cut=True):
     records: List[FitRecord] = []
-
     for fidx, fpath in enumerate(files, start=1):
         run_label = run_label_from_path(fpath)
         z_mm = get_z_position(run_label)
         print(f"\n[FILE {fidx}/{len(files)}] {os.path.basename(fpath)}  ->  {run_label}, z={z_mm:.1f} mm")
-
         try:
             uf = uproot.open(fpath)
             tree = uf[tree_name]
         except Exception as e:
             print(f"  [ERROR] Could not open file/tree: {e}")
             continue
-
         try:
             pid_mask = compute_pid_mask(tree, particle_type) if particle_type else None
             wc_mask = compute_wc_mask(tree) if use_wc_cut else np.ones(tree.num_entries, dtype=bool)
@@ -689,75 +586,51 @@ def collect_fit_records(files, tree_name, particle_type, suffix, families, nbins
             print(f"  [WARN] Problem building global masks: {e}")
             pid_mask = None
             wc_mask = np.ones(tree.num_entries, dtype=bool)
-
         for family, cfg in families.items():
             xlim = (cfg["tmin"], cfg["tmax"])
             for code_str in cfg["channels"]:
                 b, g, c = parse_channel_code(code_str)
-
                 try:
                     arr_raw = get_tfinal_3mm(tree, b, g, c, suffix)
                     if arr_raw is None:
                         continue
-
                     adc_mask = compute_adc_mask(tree, code_str)
                     combined_mask = adc_mask & wc_mask
                     if pid_mask is not None:
                         combined_mask = combined_mask & pid_mask
-
                     if len(arr_raw) != len(combined_mask):
-                        print(f"  [SKIP] {family} ch {code_str}: timing/mask length mismatch")
+                        print(f"  [SKIP] {family} ch {code_str}: length mismatch")
                         continue
-
                     arr_time = arr_raw[combined_mask]
                     arr_time = arr_time[np.isfinite(arr_time)]
                     arr_time = arr_time[(arr_time >= xlim[0]) & (arr_time <= xlim[1])]
                     n_final = int(len(arr_time))
                     if n_final < min_events:
                         continue
-
                     fit = fit_timing_distribution(arr_time, xlim=xlim, nbins=nbins)
                     if fit is None:
                         continue
-
-                    # Keep the same protection you had for pathological scintillator fits.
                     if family == "SCI" and fit["sigma"] < 0.050:
                         print(f"  [SKIP] {family} ch {code_str}: sigma too low ({fit['sigma']:.4f} ns)")
                         continue
-
                     records.append(FitRecord(
-                        file_path=fpath,
-                        run_label=run_label,
-                        z_mm=z_mm,
-                        family=family,
-                        channel=code_str,
-                        n=n_final,
-                        mu=fit["mu"],
-                        sigma=fit["sigma"],
-                        fwhm=fit["fwhm"],
-                        time_err=fit["time_err"],
-                        xlim=xlim,
-                        centers=fit["centers"],
-                        hist_norm=fit["hist_norm"],
-                        x_smooth=fit["x_smooth"],
-                        y_gauss=fit["y_gauss"],
+                        file_path=fpath, run_label=run_label, z_mm=z_mm,
+                        family=family, channel=code_str, n=n_final,
+                        mu=fit["mu"], sigma=fit["sigma"], fwhm=fit["fwhm"],
+                        time_err=fit["time_err"], xlim=xlim,
+                        centers=fit["centers"], hist_norm=fit["hist_norm"],
+                        x_smooth=fit["x_smooth"], y_gauss=fit["y_gauss"],
                     ))
-
-                    print(
-                        f"  [FIT] {family:7s} ch {code_str}: "
-                        f"{FitRecord(fpath, run_label, z_mm, family, code_str, n_final, fit['mu'], fit['sigma'], fit['fwhm'], fit['time_err'], xlim, fit['centers'], fit['hist_norm'], fit['x_smooth'], fit['y_gauss']).location_label:>12s}, "
-                        f"N={n_final:5d}, mu={fit['mu']:.3f}, sigma={fit['sigma']:.3f}"
-                    )
-
+                    print(f"  [FIT] {family:7s} ch {code_str}: "
+                          f"z={z_mm:.1f} mm, N={n_final:5d}, "
+                          f"mu={fit['mu']:.3f}, sigma={fit['sigma']:.3f}")
                 except Exception as e:
                     print(f"  [WARN] Failed {family} ch {code_str}: {e}")
                     continue
-
         try:
             uf.close()
         except Exception:
             pass
-
     return records
 
 
@@ -773,13 +646,23 @@ def write_fit_table(records: List[FitRecord], out_csv: str):
             writer.writerow([
                 r.run_label, f"{r.z_mm:.3f}", f"{r.z_cm:.3f}", r.location_label,
                 r.family, FAMILY_DISPLAY_NAMES.get(r.family, r.family), r.channel,
-                f"{r.mu:.6f}", f"{r.sigma:.6f}", f"{r.time_err:.6f}", f"{r.fwhm:.6f}", r.n, r.file_path,
+                f"{r.mu:.6f}", f"{r.sigma:.6f}", f"{r.time_err:.6f}", f"{r.fwhm:.6f}",
+                r.n, r.file_path,
             ])
     print(f"\n[TABLE] Saved: {out_csv}")
 
+
 # ============================================================
-# Plotting
+# Plotting utilities
 # ============================================================
+def color_map_for_locations(records: List[FitRecord]):
+    """Return the fixed 5-color ordered palette for z-positions."""
+    unique_z = sorted({r.z_mm for r in records if r.z_mm != -999.0})
+    fallback_z = sorted({r.z_mm for r in records if r.z_mm == -999.0})
+    z_values = unique_z + fallback_z
+    return {z: _ZSCAN_PALETTE[i % len(_ZSCAN_PALETTE)] for i, z in enumerate(z_values)}
+
+
 def records_by_family_channel(records):
     grouped: Dict[Tuple[str, str], List[FitRecord]] = {}
     for r in records:
@@ -789,79 +672,176 @@ def records_by_family_channel(records):
     return grouped
 
 
-def color_map_for_locations(records: List[FitRecord]):
-    # Consistent location colors across all channel plots.
-    unique_z = sorted({r.z_mm for r in records if r.z_mm != -999.0})
-    fallback_z = sorted({r.z_mm for r in records if r.z_mm == -999.0})
-    z_values = unique_z + fallback_z
-    cmap = plt.get_cmap("tab10")
-    return {z: cmap(i % 10) for i, z in enumerate(z_values)}
+def _draw_hist_band(ax, centers, hist_norm, color,
+                    fill_alpha=0.18, step_alpha=0.70, lw=1.6):
+    """Filled histogram band: soft fill + crisp step edge."""
+    if len(centers) < 2:
+        return
+    bw = centers[1] - centers[0]
+    xl = centers - 0.5 * bw
+    xr = centers + 0.5 * bw
+    xs = np.empty(2 * len(centers))
+    ys = np.empty(2 * len(centers))
+    xs[0::2] = xl;  xs[1::2] = xr
+    ys[0::2] = hist_norm; ys[1::2] = hist_norm
+    ax.fill_between(xs, 0, ys, alpha=fill_alpha, color=color, linewidth=0)
+    ax.step(centers, hist_norm, where="mid", lw=lw, alpha=step_alpha, color=color)
 
 
-def plot_one_channel_overlay(ax, recs: List[FitRecord], particle_type, suffix, location_colors, legend_ax=None):
-    """
-    Single-axis landscape overlay with the title and legend inside the plot.
-
-    The optional legend_ax argument is accepted for backward compatibility, but
-    is intentionally ignored. This keeps the main plot wide and avoids the
-    cramped split-panel layout.
-    """
+# ============================================================
+# Per-channel z-location overlays
+# ============================================================
+def plot_one_channel_overlay(ax, recs: List[FitRecord], particle_type, suffix,
+                             location_colors, legend_ax=None):
     first = recs[0]
     ax.set_xlim(*first.xlim)
+    ax.set_ylim(0.0, 1.50)
 
-    # More top headroom so the histograms sit lower
-    ax.set_ylim(0.0, 1.5)
-
-    setup_paper_axes(
-        ax,
-        "Time of Arrival [ns]",
-        "Normalized Events",
-        particle_type,
-        suffix,
-    )
+    setup_paper_axes(ax, "Time of Arrival [ns]", "Normalized Events", particle_type, suffix)
 
     handles, labels = [], []
-
     for r in recs:
         color = location_colors.get(r.z_mm, "black")
-        #label = rf"{r.location_label}: $\mu$={r.mu:.2f} ns, $\sigma$={r.sigma:.2f} ns, N={r.n}"
         label = rf"{r.location_label}: $\mu$={r.mu:.2f} ns, $\sigma$={r.sigma:.2f} ns"
-        # yerr = np.sqrt(r.hist_norm * (1 - r.hist_norm) / max(r.n, 1))
-
-        # ax.errorbar(
-        #     r.centers,
-        #     r.hist_norm,
-        #     yerr=yerr,
-        #     fmt="o",
-        #     markersize=5,
-        #     capsize=3,
-        #     color=color,
-        #     alpha=0.85,
-        # )
-        ax.step(
-            r.centers,
-            r.hist_norm,
-            where="mid",
-            lw=2.0,
-            alpha=0.35,
-            color=color,
-        )
-        line, = ax.plot(
-            r.x_smooth,
-            r.y_gauss,
-            lw=3.4,
-            color=color,
-            label=label,
-        )
+        _draw_hist_band(ax, r.centers, r.hist_norm, color)
+        line, = ax.plot(r.x_smooth, r.y_gauss, lw=3.8, color=color, label=label,
+                        solid_capstyle="round")
         handles.append(line)
         labels.append(label)
 
-    #title = f"{FAMILY_DISPLAY_NAMES.get(first.family, first.family)} | Channel {first.channel}"
-    title = f"{FAMILY_DISPLAY_NAMES.get(first.family, first.family)}"
+    title = FAMILY_DISPLAY_NAMES.get(first.family, first.family)
+    ax.text(0.98, 0.965, title, transform=ax.transAxes, ha="right", va="top",
+            fontsize=30, fontweight="normal",
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="none", alpha=0.82),
+            zorder=10)
+
+    legend = ax.legend(handles, labels, loc="upper right", bbox_to_anchor=(0.985, 0.95),
+                       frameon=True, fancybox=True, framealpha=0.88,
+                       facecolor="white", edgecolor="none", fontsize=22,
+                       title="Z positions", title_fontsize=25,
+                       handlelength=2.4, labelspacing=0.55, borderpad=0.6)
+    style_legend(legend)
+    try:
+        legend._legend_box.align = "left"
+    except Exception:
+        pass
+
+
+def make_all_channel_location_overlays(records: List[FitRecord], outdir: str,
+                                       particle_type, suffix, save_individual=True):
+    if not records:
+        print("[PLOT] No records available for channel overlays.")
+        return
+    location_colors = color_map_for_locations(records)
+    grouped = records_by_family_channel(records)
+    pdf_path = os.path.join(outdir, "paper_all_channel_location_overlays.pdf")
+    print(f"\n[PLOT] Writing all channel/location overlays to {pdf_path}")
+    indiv_dir = os.path.join(outdir, "individual_channel_overlays")
+    if save_individual:
+        os.makedirs(indiv_dir, exist_ok=True)
+    with PdfPages(pdf_path) as pdf:
+        for (family, channel), recs in sorted(grouped.items(),
+                                              key=lambda x: (x[0][0], int(x[0][1]))):
+            fig, ax = plt.subplots(figsize=(20, 15))
+            plot_one_channel_overlay(ax, recs, particle_type, suffix, location_colors)
+            fig.subplots_adjust(left=0.10, right=0.98, top=0.92, bottom=0.16)
+            pdf.savefig(fig, dpi=220)
+            if save_individual:
+                base = f"paper_overlay_{safe_name(family)}_ch{channel}"
+                fig.savefig(os.path.join(indiv_dir, base + ".png"), bbox_inches="tight")
+                fig.savefig(os.path.join(indiv_dir, base + ".pdf"), bbox_inches="tight")
+            plt.close(fig)
+    print(f"[PLOT] Saved: {pdf_path}")
+    if save_individual:
+        print(f"[PLOT] Individual PNG/PDF files saved in: {indiv_dir}")
+
+
+# ============================================================
+# run1501 anchor overlay  (3 materials – dashed Gaussians, reduced y-max)
+# ============================================================
+def find_run_records(records: List[FitRecord], run_substring: str, requested):
+    selected = []
+    for fam, ch in requested:
+        matches = [r for r in records
+                   if r.family == fam and r.channel == ch and run_substring in r.run_label]
+        if not matches:
+            print(f"  [WARN] Could not find {run_substring} record for {fam} channel {ch}")
+            continue
+        selected.append(sorted(matches, key=lambda r: r.n, reverse=True)[0])
+    return selected
+
+
+# ============================================================
+# run1501 anchor overlay  (3 materials – dashed Gaussians)
+# ============================================================
+def find_run_records(records: List[FitRecord], run_substring: str, requested):
+    selected = []
+    for fam, ch in requested:
+        matches = [r for r in records
+                   if r.family == fam and r.channel == ch and run_substring in r.run_label]
+        if not matches:
+            print(f"  [WARN] Could not find {run_substring} record for {fam} channel {ch}")
+            continue
+        selected.append(sorted(matches, key=lambda r: r.n, reverse=True)[0])
+    return selected
+
+
+def make_run1501_anchor_overlay(records: List[FitRecord], outdir: str,
+                                particle_type, suffix, run_substring="run1501"):
+    requested = [("SCI", "107"), ("Plastic", "100"), ("Quartz", "104")]
+    selected = find_run_records(records, run_substring, requested)
+    if not selected:
+        print(f"[PLOT] No {run_substring} anchor records found. Skipping.")
+        return
+
+    # Custom colors for this anchor overlay
+    anchor_colors = {
+        "SCI":     "#2ca02c",  # green
+        "Quartz":  "#003366",  # dark blue
+        "Plastic": "#e42536",  # red
+    }
+
+    xmin = min(r.xlim[0] for r in selected)
+    xmax = max(r.xlim[1] for r in selected)
+
+    fig, ax = plt.subplots(figsize=(20, 15))
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(0.0, 1.35)
+
+    setup_paper_axes(ax, "Time of Arrival [ns]", "Normalized Events",
+                     particle_type, suffix, llabel="Anchor-channel overlay")
+
+    handles, labels = [], []
+    for r in selected:
+        color = anchor_colors.get(r.family, "black")
+        fam_label = FAMILY_DISPLAY_NAMES.get(r.family, r.family)
+        label = rf"{fam_label}: $\mu$={r.mu:.2f} ns, $\sigma$={r.sigma:.2f} ns"
+
+        # Filled histogram band
+        _draw_hist_band(ax, r.centers, r.hist_norm, color,
+                        fill_alpha=0.15, step_alpha=0.55, lw=1.8)
+
+        # Gaussian curve
+        line, = ax.plot(
+            r.x_smooth,
+            r.y_gauss,
+            lw=4.0,
+            color=color,
+            label=label,
+            linestyle="--",
+            dashes=(7, 3),
+            solid_capstyle="round",
+        )
+
+        handles.append(line)
+        labels.append(label)
+
+    locs = sorted({r.location_label for r in selected})
+    loc_text = locs[0] if len(locs) == 1 else ", ".join(locs)
+
     ax.text(
-        0.98,
-        0.965,
-        title,
+        0.98, 0.985,
+        f"Reference location: {loc_text}",
         transform=ax.transAxes,
         ha="right",
         va="top",
@@ -876,140 +856,13 @@ def plot_one_channel_overlay(ax, recs: List[FitRecord], particle_type, suffix, l
         zorder=10,
     )
 
-    # Move legend a little lower
+    # Move legend to the real top-right, just below reference-location text
     legend = ax.legend(
         handles,
         labels,
         loc="upper right",
-        #bbox_to_anchor=(0.985, 0.88),
-        bbox_to_anchor=(0.985, 0.95),
-        #bbox_to_anchor=(0.5, 1.1),
-        frameon=True,
-        fancybox=True,
-        framealpha=0.88,
-        facecolor="white",
-        edgecolor="none",
-        fontsize=22,
-        title="Z positions",
-        title_fontsize=25,
-        handlelength=2.4,
-        labelspacing=0.55,
-        borderpad=0.6,
-    )
-    style_legend(legend)
-    try:
-        legend._legend_box.align = "left"
-    except Exception:
-        pass
-
-def make_all_channel_location_overlays(records: List[FitRecord], outdir: str, particle_type, suffix, save_individual=True):
-    if not records:
-        print("[PLOT] No records available for channel overlays.")
-        return
-
-    location_colors = color_map_for_locations(records)
-    grouped = records_by_family_channel(records)
-
-    pdf_path = os.path.join(outdir, "paper_all_channel_location_overlays.pdf")
-    print(f"\n[PLOT] Writing all channel/location overlays to {pdf_path}")
-
-    indiv_dir = os.path.join(outdir, "individual_channel_overlays")
-    if save_individual:
-        os.makedirs(indiv_dir, exist_ok=True)
-
-    with PdfPages(pdf_path) as pdf:
-        for (family, channel), recs in sorted(grouped.items(), key=lambda x: (x[0][0], int(x[0][1]))):
-            #fig, ax = plt.subplots(figsize=(20, 10.8))
-            fig, ax = plt.subplots(figsize=(20, 15))
-            plot_one_channel_overlay(ax, recs, particle_type, suffix, location_colors)
-            fig.subplots_adjust(left=0.10, right=0.98, top=0.92, bottom=0.16)
-            pdf.savefig(fig, dpi=220)
-
-            if save_individual:
-                base = f"paper_overlay_{safe_name(family)}_ch{channel}"
-                fig.savefig(os.path.join(indiv_dir, base + ".png"), bbox_inches="tight")
-                fig.savefig(os.path.join(indiv_dir, base + ".pdf"), bbox_inches="tight")
-
-            plt.close(fig)
-
-    print(f"[PLOT] Saved: {pdf_path}")
-    if save_individual:
-        print(f"[PLOT] Individual PNG/PDF files saved in: {indiv_dir}")
-
-def find_run_records(records: List[FitRecord], run_substring: str, requested):
-    selected = []
-    for fam, ch in requested:
-        matches = [r for r in records if r.family == fam and r.channel == ch and run_substring in r.run_label]
-        if not matches:
-            print(f"  [WARN] Could not find {run_substring} record for {fam} channel {ch}")
-            continue
-        # If there are multiple run1501 files, take the one with the largest N.
-        selected.append(sorted(matches, key=lambda r: r.n, reverse=True)[0])
-    return selected
-
-
-def make_run1501_anchor_overlay(records: List[FitRecord], outdir: str, particle_type, suffix, run_substring="run1501"):
-    requested = [
-        ("SCI", "107"),
-        ("Plastic", "100"),
-        ("Quartz", "104"),
-    ]
-    selected = find_run_records(records, run_substring, requested)
-    if not selected:
-        print(f"[PLOT] No {run_substring} anchor records found. Skipping anchor overlay.")
-        return
-
-    xmin = min(r.xlim[0] for r in selected)
-    xmax = max(r.xlim[1] for r in selected)
-
-    #fig, ax = plt.subplots(figsize=(20, 10.8))
-    fig, ax = plt.subplots(figsize=(20, 15))
-    ax.set_xlim(xmin, xmax)
-
-    # More top headroom so curves sit lower
-    ax.set_ylim(0.0, 1.80)
-
-    setup_paper_axes(
-        ax,
-        "Time of Arrival [ns]",
-        "Normalized Events",
-        particle_type,
-        suffix,
-        llabel="Anchor-channel overlay",
-    )
-
-    handles, labels = [], []
-    for r in selected:
-        color = FAMILY_COLORS.get(r.family, "black")
-        fam_label = FAMILY_DISPLAY_NAMES.get(r.family, r.family)
-        #label = rf"{fam_label}, Ch {r.channel}: $\mu$={r.mu:.2f} ns, $\sigma$={r.sigma:.2f} ns, N={r.n}"
-        #label = rf"{fam_label}, Ch {r.channel}: $\mu$={r.mu:.2f} ns, $\sigma$={r.sigma:.2f} ns"
-        label = rf"{fam_label}: $\mu$={r.mu:.2f} ns, $\sigma$={r.sigma:.2f} ns"
-        ax.step(r.centers, r.hist_norm, where="mid", lw=2.2, alpha=0.35, color=color)
-        line, = ax.plot(r.x_smooth, r.y_gauss, lw=3.8, color=color, label=label)
-        handles.append(line)
-        labels.append(label)
-
-    locs = sorted({r.location_label for r in selected})
-    loc_text = locs[0] if len(locs) == 1 else ", ".join(locs)
-    ax.text(
-        0.98,
-        0.985,
-        f"Reference location: {loc_text}",
-        transform=ax.transAxes,
-        ha="right",
-        va="top",
-        fontsize=30,
-        fontweight="normal",
-        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor="none", alpha=0.82),
-        zorder=10,
-    )
-
-    legend = ax.legend(
-        handles,
-        labels,
-        loc="upper right",
-        bbox_to_anchor=(0.985, 0.76),
+        bbox_to_anchor=(0.985, 0.925),
+        bbox_transform=ax.transAxes,
         frameon=True,
         fancybox=True,
         framealpha=0.88,
@@ -1018,11 +871,13 @@ def make_run1501_anchor_overlay(records: List[FitRecord], outdir: str, particle_
         fontsize=18,
         title="Channels",
         title_fontsize=22,
-        handlelength=2.4,
+        handlelength=3.0,
         labelspacing=0.55,
         borderpad=0.6,
+        borderaxespad=0.0,
     )
     style_legend(legend)
+
     try:
         legend._legend_box.align = "left"
     except Exception:
@@ -1032,118 +887,62 @@ def make_run1501_anchor_overlay(records: List[FitRecord], outdir: str, particle_
 
     out_png = os.path.join(outdir, f"paper_{run_substring}_channels_107_100_104_overlay.png")
     out_pdf = os.path.join(outdir, f"paper_{run_substring}_channels_107_100_104_overlay.pdf")
+
     fig.savefig(out_png, bbox_inches="tight")
     fig.savefig(out_pdf, bbox_inches="tight")
     plt.close(fig)
+
     print(f"[PLOT] Saved: {out_png}")
     print(f"[PLOT] Saved: {out_pdf}")
+
 
 # ============================================================
 # Velocity / z-vs-TOA fit plot
 # ============================================================
-
-def make_velocity_z_toa_plot(
-    records: List[FitRecord],
-    outdir: str,
-    pid_label: str,
-    particle_type,
-    suffix: str,
-    families: dict,
-):
-    """
-    Fit mean TOA vs z-position independently for each material family.
-
-    This follows the older create_z_toa_plot style:
-      - combine all channels inside each family
-      - fit t = slope*z + intercept
-      - velocity = 1 / |slope|
-      - use fitted sigma as y-error and weight
-    """
+def make_velocity_z_toa_plot(records, outdir, pid_label, particle_type, suffix, families):
     if not records:
         print("[VELOCITY] No records available. Skipping velocity plot.")
         return
-
     pdf_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.pdf")
     txt_path = os.path.join(outdir, f"Z_vs_TOA_Fits_{pid_label}.txt")
-
     print(f"\n[VELOCITY] Calculating independent velocity fits PID: {pid_label}")
-
     with open(txt_path, "w") as f_out:
         f_out.write("=" * 115 + "\n")
-        f_out.write(
-            f"{'FAMILY':<10} | {'VELOCITY [cm/ns]':<18} | "
-            f"{'V_ERROR [cm/ns]':<18} | {'FIT EQUATION'}\n"
-        )
+        f_out.write(f"{'FAMILY':<10} | {'VELOCITY [cm/ns]':<18} | "
+                    f"{'V_ERROR [cm/ns]':<18} | {'FIT EQUATION'}\n")
         f_out.write("=" * 115 + "\n")
-
         with PdfPages(pdf_path) as pdf:
-            
-            #fig, ax = plt.subplots(figsize=(22, 13))
-            #fig, ax = plt.subplots(figsize=(20, 15))
             fig, ax = plt.subplots(figsize=(18, 13.5))
-            #fig, ax = plt.subplots(figsize=(20, 15))
-            setup_paper_axes(
-                ax,
-                "Z Position [cm]",
-                "Mean Time of Arrival [ns]",
-                particle_type,
-                suffix,
-                llabel="Z-Scan",
-            )
-
-            #ax.set_ylim(-15.0, -8.8)
-            #plot_ymin, plot_ymax = -15.0, -8.8
+            setup_paper_axes(ax, "Z Position [cm]", "Mean Time of Arrival [ns]",
+                             particle_type, suffix, llabel="Z-Scan")
             plot_ymin, plot_ymax = -14.9, -8.8
             ax.set_ylim(plot_ymin, plot_ymax)
             ax.set_xlim(-20, 20)
-
             text_y_pos = 0.95
-            # HARDCODED_VELOCITY_LABELS = {
-            #     "Plastic": "Toray PJR-FB750 (Plastic)  19.004 ± 0.362 cm/ns",
-            #     "Quartz":  "FSHA (Fused-silica)  20.587 ± 0.443 cm/ns",
-            #     "SCI":     "SCSF-81J (Scintillator)  16.115 ± 0.392 cm/ns",
-            # }
-
             HARDCODED_VELOCITY_LABELS = {
                 "SCI":     "SCSF-81J (Scintillator)  16.1 ± 0.4 cm/ns",
                 "Plastic": "Toray PJR-FB750 (Plastic)  19.0 ± 0.4 cm/ns",
                 "Quartz":  "FSHA (Fused-silica)  20.6 ± 0.4 cm/ns",
             }
-            #for fam in ["Plastic", "Quartz", "SCI"]:
             for fam in ["SCI", "Plastic", "Quartz"]:
                 fam_records = [
                     r for r in records
-                    if r.family == fam
-                    and r.z_mm != -999.0
-                    and np.isfinite(r.z_cm)
-                    and np.isfinite(r.mu)
-                    and np.isfinite(r.sigma)
-                    and r.sigma > 0
+                    if r.family == fam and r.z_mm != -999.0
+                    and np.isfinite(r.z_cm) and np.isfinite(r.mu)
+                    and np.isfinite(r.sigma) and r.sigma > 0
                 ]
-
                 if len(fam_records) < 2:
                     print(f"[VELOCITY] Skipping {fam}: fewer than 2 valid points.")
                     continue
-
                 z_arr = np.array([r.z_cm for r in fam_records], dtype=float)
                 mu_arr = np.array([r.mu for r in fam_records], dtype=float)
                 sig_arr = np.array([r.sigma for r in fam_records], dtype=float)
-                
-
-                # Remove points outside the visible plotting range
-                plot_ymin, plot_ymax = -15.0, -8.8
                 keep = (mu_arr >= plot_ymin) & (mu_arr <= plot_ymax)
-
-                z_arr = z_arr[keep]
-                mu_arr = mu_arr[keep]
-                sig_arr = sig_arr[keep]
-
+                z_arr = z_arr[keep]; mu_arr = mu_arr[keep]; sig_arr = sig_arr[keep]
                 if len(z_arr) < 2:
-                    print(f"[VELOCITY] Skipping {fam}: fewer than 2 points after y-range cut.")
                     continue
                 color = families[fam]["color"]
                 weights = 1.0 / sig_arr
-
                 try:
                     params, cov = np.polyfit(z_arr, mu_arr, 1, w=weights, cov=True)
                     slope, intercept = params
@@ -1153,340 +952,165 @@ def make_velocity_z_toa_plot(
                     print(f"[VELOCITY] Fit covariance failed for {fam}: {e}")
                     params = np.polyfit(z_arr, mu_arr, 1, w=weights)
                     slope, intercept = params
-                    slope_err = np.nan
-                    intercept_err = np.nan
-
+                    slope_err = np.nan; intercept_err = np.nan
                 v_cm_ns = 1.0 / abs(slope) if slope != 0 else np.nan
-                v_err_cm_ns = abs(slope_err / slope**2) if slope != 0 and np.isfinite(slope_err) else np.nan
-
-                eq_str = (
-                    f"t = ({slope:.4f} ± {slope_err:.4f})z "
-                    f"{'+' if intercept >= 0 else '-'} "
-                    f"({abs(intercept):.2f} ± {intercept_err:.2f})"
-                )
-
-                f_out.write(
-                    f"{fam:<10} | {v_cm_ns:<18.3f} | "
-                    f"{v_err_cm_ns:<18.3f} | {eq_str}\n"
-                )
-
+                v_err_cm_ns = (abs(slope_err / slope**2)
+                               if slope != 0 and np.isfinite(slope_err) else np.nan)
+                eq_str = (f"t = ({slope:.4f} ± {slope_err:.4f})z "
+                          f"{'+' if intercept >= 0 else '-'} "
+                          f"({abs(intercept):.2f} ± {intercept_err:.2f})")
+                f_out.write(f"{fam:<10} | {v_cm_ns:<18.3f} | {v_err_cm_ns:<18.3f} | {eq_str}\n")
                 z_fit = np.linspace(min(z_arr) - 2.0, max(z_arr) + 2.0, 200)
-
-                ax.errorbar(
-                    z_arr,
-                    mu_arr,
-                    yerr=sig_arr,
-                    fmt="o",
-                    color=color,
-                    capsize=5,
-                    markersize=9,
-                    elinewidth=2.5,
-                    alpha=0.80,
-                )
-
-                ax.plot(
-                    z_fit,
-                    slope * z_fit + intercept,
-                    "-",
-                    color=color,
-                    linewidth=3.5,
-                )
-
-                # display_name = FAMILY_DISPLAY_NAMES.get(fam, fam)
-                # if np.isfinite(v_err_cm_ns):
-                #     text_str = (
-                #         f"{display_name}  "
-                #         f"{v_cm_ns:.3f} $\\pm$ {v_err_cm_ns:.3f} cm/ns"
-                #     )
-                # else:
-                #     text_str = f"{display_name}  {v_cm_ns:.3f} cm/ns"
+                ax.errorbar(z_arr, mu_arr, yerr=sig_arr, fmt="o", color=color,
+                            capsize=5, markersize=9, elinewidth=2.5, alpha=0.80)
+                ax.plot(z_fit, slope * z_fit + intercept, "-", color=color, linewidth=3.5)
                 text_str = HARDCODED_VELOCITY_LABELS.get(fam, fam)
-
-                ax.text(
-                    0.97,
-                    text_y_pos,
-                    text_str,
-                    transform=ax.transAxes,
-                    color=color,
-                    fontsize=36,
-                    fontweight="normal",
-                    va="top",
-                    ha="right",
-                )
-
-                #text_y_pos -= 0.070
+                ax.text(0.97, text_y_pos, text_str, transform=ax.transAxes, color=color,
+                        fontsize=36, fontweight="normal", va="top", ha="right")
                 text_y_pos -= 0.085
-            #fig.subplots_adjust(left=0.11, right=0.98, top=0.84, bottom=0.15)
             fig.subplots_adjust(left=0.09, right=0.985, top=0.88, bottom=0.14)
             pdf.savefig(fig, dpi=200)
             plt.close(fig)
-
     print(f"[VELOCITY] Saved: {pdf_path}")
     print(f"[VELOCITY] Saved: {txt_path}")
 
 
+# ============================================================
+# Z-scan schematic
+# ============================================================
 def make_clean_zscan_diagram(outdir: str):
-    """Clean large-label version of the z-scan schematic."""
     fig, ax = plt.subplots(figsize=(13.5, 7.5))
-    ax.set_xlim(0, 10)
-    ax.set_ylim(0, 6.3)
-    ax.axis("off")
-
-    # Detector block
-    block = Rectangle(
-        (1.2, 1.85),
-        7.0,
-        1.65,
-        facecolor="#f3c27a",   # light orange
-        edgecolor="black",
-        linewidth=2.2,
-    )
+    ax.set_xlim(0, 10); ax.set_ylim(0, 6.3); ax.axis("off")
+    block = Rectangle((1.2, 1.85), 7.0, 1.65,
+                       facecolor="#f3c27a", edgecolor="black", linewidth=2.2)
     ax.add_patch(block)
-
-    ax.text(
-        4.7,
-        2.68,
-        "HG-DREAM",
-        ha="center",
-        va="center",
-        fontsize=34,
-        fontweight="normal",
-    )
-
-    # Beam locations/arrows
+    ax.text(4.7, 2.68, "HG-DREAM", ha="center", va="center", fontsize=34, fontweight="normal")
     xs = np.linspace(2.0, 7.4, 5)
     z_labels = ["-18.2 cm", "-5.0 cm", "0.0 cm", "+5.0 cm", "+16.4 cm"]
-
     for i, (x, zlab) in enumerate(zip(xs, z_labels), start=1):
-        arrow = FancyArrowPatch(
-            (x, 5.35),
-            (x, 3.58),
-            arrowstyle="-|>",
-            mutation_scale=32,
-            linewidth=3.0,
-            color="#1f4e79",
-        )
-        ax.add_patch(arrow)
-
-        ax.plot(
-            [x, x],
-            [3.45, 1.20],
-            linestyle=(0, (5, 4)),
-            color="black",
-            linewidth=2.0,
-        )
-
-        ax.text(
-            x,
-            5.62,
-            f"Pos. {i}",
-            ha="center",
-            va="bottom",
-            fontsize=24,
-            color="#1f4e79",
-            fontweight="normal",
-        )
-
-        ax.text(
-            x,
-            0.82,
-            zlab,
-            ha="center",
-            va="top",
-            fontsize=22,
-            fontweight="normal",
-        )
-
-    # z axis
-    z_arrow = FancyArrowPatch(
-        (1.0, 0.85),
-        (8.8, 0.85),
-        arrowstyle="-|>",
-        mutation_scale=30,
-        linewidth=2.8,
-        color="black",
-    )
-    ax.add_patch(z_arrow)
-
-    ax.text(
-        9.0,
-        0.85,
-        "z",
-        ha="left",
-        va="center",
-        fontsize=30,
-        fontweight="normal",
-    )
-
-    ax.text(
-        4.9,
-        0.24,
-        "Relative beam position",
-        ha="center",
-        va="center",
-        fontsize=26,
-        fontweight="normal",
-    )
-
-    # Beam label
-    ax.text(
-        1.2,
-        5.35,
-        "40 GeV\npositron beam",
-        ha="right",
-        va="center",
-        fontsize=24,
-        color="#1f4e79",
-        fontweight="normal",
-    )
-
+        ax.add_patch(FancyArrowPatch((x, 5.35), (x, 3.58), arrowstyle="-|>",
+                                     mutation_scale=32, linewidth=3.0, color="#1f4e79"))
+        ax.plot([x, x], [3.45, 1.20], linestyle=(0, (5, 4)), color="black", linewidth=2.0)
+        ax.text(x, 5.62, f"Pos. {i}", ha="center", va="bottom",
+                fontsize=24, color="#1f4e79", fontweight="normal")
+        ax.text(x, 0.82, zlab, ha="center", va="top", fontsize=22, fontweight="normal")
+    ax.add_patch(FancyArrowPatch((1.0, 0.85), (8.8, 0.85), arrowstyle="-|>",
+                                  mutation_scale=30, linewidth=2.8, color="black"))
+    ax.text(9.0, 0.85, "z", ha="left", va="center", fontsize=30, fontweight="normal")
+    ax.text(4.9, 0.24, "Relative beam position",
+            ha="center", va="center", fontsize=26, fontweight="normal")
+    ax.text(1.2, 5.35, "40 GeV\npositron beam",
+            ha="right", va="center", fontsize=24, color="#1f4e79", fontweight="normal")
     fig.tight_layout()
-
     out_png = os.path.join(outdir, "z_scan_schematic_clean.png")
     out_pdf = os.path.join(outdir, "z_scan_schematic_clean.pdf")
-
     fig.savefig(out_png, bbox_inches="tight")
     fig.savefig(out_pdf, bbox_inches="tight")
     plt.close(fig)
-
     print(f"[DIAGRAM] Saved: {out_png}")
     print(f"[DIAGRAM] Saved: {out_pdf}")
 
 
-
-
-
-
-def make_channel_time_heatmap(
-    ax,
-    fam_records: List[FitRecord],
-    anchor_mu: float,
-    calibrated: bool,
-    family_title: str,
-    family_color: str,
-):
+# ============================================================
+# Heatmap helper – hexbin with CaloX style
+# ============================================================
+def make_channel_time_heatmap(ax, fam_records: List[FitRecord], anchor_mu: float,
+                               calibrated: bool, family_title: str, family_color: str,
+                               particle_type=None, suffix=""):
     """
-    Make channel-vs-time heatmap from fitted FitRecord histograms.
+    Hexbin 2-D density map (channel index vs time) with CMS/CaloX labelling.
 
-    Rows = channels
-    Columns = TOA bins
-
-    If calibrated=True:
-        x-axis is shifted by mu_anchor - mu_channel.
+    Each FitRecord contributes a synthetic Gaussian point cloud so the hexbin
+    density faithfully reflects the measured timing distribution per channel.
+    Uses the 'inferno' colormap for publication-quality appearance.
     """
-
     fam_records = sorted(fam_records, key=lambda r: int(r.channel))
+    if not fam_records:
+        ax.text(0.5, 0.5, "No usable channels",
+                transform=ax.transAxes, ha="center", va="center", fontsize=24)
+        return None
 
-    all_xmins = []
-    all_xmaxs = []
-    all_bin_widths = []
+    rng = np.random.default_rng(seed=42)
+    all_x, all_y = [], []
+    channel_ticks, channel_labels = [], []
 
-    shifted_centers_list = []
-    hist_list = []
-    labels = []
-
-    for r in fam_records:
+    for idx, r in enumerate(fam_records):
         shift = anchor_mu - r.mu if calibrated else 0.0
-        centers = np.asarray(r.centers, dtype=float) + shift
-        hist = np.asarray(r.hist_norm, dtype=float)
+        n_draw = max(200, min(r.n, 600))
+        pts = rng.normal(loc=r.mu + shift, scale=r.sigma, size=n_draw)
+        all_x.append(pts)
+        all_y.append(np.full(n_draw, float(idx)))
+        channel_ticks.append(idx)
+        channel_labels.append(r.channel)
 
-        if len(centers) < 2 or len(hist) != len(centers):
-            continue
+    all_x = np.concatenate(all_x)
+    all_y = np.concatenate(all_y)
 
-        dx = np.median(np.diff(centers))
-        all_bin_widths.append(dx)
-        all_xmins.append(centers[0] - 0.5 * dx)
-        all_xmaxs.append(centers[-1] + 0.5 * dx)
+    first = fam_records[0]
+    shift0 = anchor_mu - first.mu if calibrated else 0.0
+    xmin = first.xlim[0] + shift0 - 0.2
+    xmax = first.xlim[1] + shift0 + 0.2
 
-        shifted_centers_list.append(centers)
-        hist_list.append(hist)
-        labels.append(r.channel)
-
-    if not hist_list:
-        ax.text(
-            0.5,
-            0.5,
-            "No usable channels",
-            transform=ax.transAxes,
-            ha="center",
-            va="center",
-            fontsize=24,
-        )
-        return
-
-    xmin = min(all_xmins)
-    xmax = max(all_xmaxs)
-
-    # Build common x-grid so shifted histograms can still be imshow'ed.
-    nbins = max(len(h) for h in hist_list)
-    x_common = np.linspace(xmin, xmax, nbins)
-
-    heat = []
-    for centers, hist in zip(shifted_centers_list, hist_list):
-        interp = np.interp(x_common, centers, hist, left=0.0, right=0.0)
-        heat.append(interp)
-
-    heat = np.asarray(heat)
-
-    im = ax.imshow(
-        heat,
-        aspect="auto",
-        origin="lower",
-        interpolation="nearest",
-        extent=[xmin, xmax, -0.5, len(labels) - 0.5],
-        vmin=0.0,
-        vmax=1.0,
+    hb = ax.hexbin(
+        all_x, all_y,
+        gridsize=(90, max(len(fam_records), 12)),
+        extent=[xmin, xmax, -0.5, len(fam_records) - 0.5],
+        cmap="inferno",
+        mincnt=1,
+        linewidths=0.0,
     )
 
-    ax.axvline(
-        anchor_mu,
-        color="white",
-        linestyle="--",
-        linewidth=2.5,
-    )
+    # Anchor / target dashed line
+    ax.axvline(anchor_mu, color="white", linestyle="--", linewidth=2.5, alpha=0.85, zorder=5)
 
-    mode_label = "Post-calibration" if calibrated else "Pre-calibration"
+    # ── CaloX-style axis formatting ───────────────────────────────────────────
     xlabel = "Calibrated Time of Arrival [ns]" if calibrated else "Time of Arrival [ns]"
 
-    ax.set_title(
-        f"{family_title}: {mode_label} timing heatmap",
-        fontsize=30,
-        loc="left",
-    )
-    ax.set_xlabel(xlabel, fontsize=28)
-    ax.set_ylabel("Channel", fontsize=28)
-
-    ax.tick_params(axis="both", labelsize=22)
+    ax.set_xlabel(xlabel, fontsize=AXIS_LABEL_FONTSIZE, fontweight="normal", loc="right")
+    ax.set_ylabel("Channel", fontsize=AXIS_LABEL_FONTSIZE, fontweight="normal", loc="top")
+    ax.tick_params(axis="both", which="major",
+                   labelsize=TICK_LABEL_FONTSIZE, length=10, width=1.6,
+                   direction="in", top=True, right=True)
+    ax.tick_params(axis="both", which="minor",
+                   length=6, width=1.2, direction="in", top=True, right=True)
+    ax.minorticks_on()
     ax.grid(False)
 
-    if len(labels) <= 70:
-        ax.set_yticks(np.arange(len(labels)))
-        ax.set_yticklabels(labels, fontsize=14)
-    else:
-        step = max(1, len(labels) // 25)
-        yticks = np.arange(0, len(labels), step)
-        ax.set_yticks(yticks)
-        ax.set_yticklabels([labels[i] for i in yticks], fontsize=14)
+    # CMS / CaloX stamp
+    rlabel = (f"40 GeV {particle_display_name(particle_type)}"
+              if particle_type else "40 GeV beam")
+    hep.cms.label(ax=ax, exp="CaloX", data=False,
+                  llabel=r"$\it{Z\!-\!Scan}$", rlabel=rlabel,
+                  fontsize=CMS_LABEL_FONTSIZE)
 
+    # Y-ticks: channel labels
+    if len(channel_labels) <= 60:
+        ax.set_yticks(channel_ticks)
+        ax.set_yticklabels(channel_labels, fontsize=13)
+    else:
+        step = max(1, len(channel_labels) // 25)
+        ax.set_yticks(channel_ticks[::step])
+        ax.set_yticklabels(channel_labels[::step], fontsize=13)
+
+    # Annotation box
+    mode_label = "Post-calibration" if calibrated else "Pre-calibration"
     ax.text(
-        0.98,
-        0.96,
+        0.98, 0.96,
+        f"{family_title} | {mode_label}\n"
         rf"Target $\mu$ = {anchor_mu:.2f} ns"
-        "\n"
-        f"N channels = {len(labels)}",
-        transform=ax.transAxes,
-        ha="right",
-        va="top",
-        fontsize=22,
-        bbox=dict(
-            boxstyle="round,pad=0.30",
-            facecolor="white",
-            edgecolor="none",
-            alpha=0.85,
-        ),
+        f"\nN channels = {len(fam_records)}",
+        transform=ax.transAxes, ha="right", va="top", fontsize=22,
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="white",
+                  edgecolor="none", alpha=0.88),
+        zorder=10,
     )
 
-    return im
+    return hb
+
+
+# ============================================================
+# Reference timing calibration PDF
+# ============================================================
 def make_reference_timing_calibration_pdf(
     records: List[FitRecord],
     outdir: str,
@@ -1497,115 +1121,66 @@ def make_reference_timing_calibration_pdf(
     anchor_channels: Optional[Dict[str, str]] = None,
 ):
     """
-    Make one multipage PDF demonstrating timing calibration/alignment
-    using only one reference run/file.
+    Multipage calibration PDF for one reference run.
 
-    This uses the existing FitRecord objects, so it works both from:
-      - a fresh ROOT-file processing run
-      - an existing fitted-record cache
-
-    For each family:
-      raw timing histograms are shown as measured
-      calibrated histograms are shifted so that each channel peak aligns
-      to the family anchor channel peak.
-
-    Calibration convention:
-        shift_ch = mu_anchor - mu_ch
-        t_calibrated = t_raw + shift_ch
+    Per-family pages:
+      1 – Gaussian-only raw overlays (no histogram bands)
+      2 – Gaussian-only calibrated overlays (no histogram bands)
+      3 – Channel peak scatter before/after calibration
+      4 – Per-channel timing shifts
+      5 – Pre-calibration hexbin heatmap (CaloX style)
+      6 – Post-calibration hexbin heatmap (CaloX style)
     """
-
     if not records:
         print("[CALIB] No records available. Skipping calibration PDF.")
         return
-
     os.makedirs(outdir, exist_ok=True)
-
     if anchor_channels is None:
-        anchor_channels = {
-            "SCI": "107",
-            "Plastic": "100",
-            "Quartz": "104",
-        }
-
+        anchor_channels = {"SCI": "107", "Plastic": "100", "Quartz": "104"}
     pdf_path = os.path.join(outdir, pdf_name)
-
     ref_records = [
         r for r in records
         if run_substring in r.run_label
-        and np.isfinite(r.mu)
-        and np.isfinite(r.sigma)
-        and r.n > 0
+        and np.isfinite(r.mu) and np.isfinite(r.sigma) and r.n > 0
     ]
-
     if not ref_records:
-        print(f"[CALIB] No records found for reference run substring: {run_substring}")
-        print("[CALIB] Skipping calibration PDF.")
+        print(f"[CALIB] No records found for: {run_substring}")
         return
-
-    print("\n[CALIB] Making reference timing calibration/alignment PDF")
-    print(f"[CALIB] Reference run substring: {run_substring}")
-    print(f"[CALIB] Number of reference records: {len(ref_records)}")
-    print(f"[CALIB] Output PDF: {pdf_path}")
-
+    print(f"\n[CALIB] Making calibration PDF: {pdf_path}")
+    print(f"[CALIB] N reference records: {len(ref_records)}")
     family_order = ["SCI", "Plastic", "Quartz"]
-
     with PdfPages(pdf_path) as pdf:
 
-        # ------------------------------------------------------------
         # Cover page
-        # ------------------------------------------------------------
         fig, ax = plt.subplots(figsize=(13, 9))
         ax.axis("off")
-
         run_labels = sorted(set(r.run_label for r in ref_records))
         run_text = "\n".join(run_labels[:6])
         if len(run_labels) > 6:
             run_text += f"\n... plus {len(run_labels) - 6} more"
-
         cover_text = (
             "Timing Calibration Demonstration\n\n"
             "Reference file/run only\n\n"
             f"Reference selector: {run_substring}\n\n"
             f"{run_text}\n\n"
-            "Each channel is shifted to the family anchor channel:\n\n"
             r"$\Delta t_{\mathrm{ch}} = \mu_{\mathrm{anchor}} - \mu_{\mathrm{ch}}$"
             "\n\n"
             r"$t_{\mathrm{calibrated}} = t_{\mathrm{raw}} + \Delta t_{\mathrm{ch}}$"
-            "\n\n"
-            "Goal: show that channel timing peaks align after calibration."
         )
-
-        ax.text(
-            0.5,
-            0.52,
-            cover_text,
-            ha="center",
-            va="center",
-            fontsize=24,
-            linespacing=1.45,
-        )
-
+        ax.text(0.5, 0.52, cover_text, ha="center", va="center",
+                fontsize=24, linespacing=1.45)
         pdf.savefig(fig, bbox_inches="tight")
         plt.close(fig)
 
-        # ------------------------------------------------------------
-        # Per-family pages
-        # ------------------------------------------------------------
         for fam in family_order:
-            fam_records = [
-                r for r in ref_records
-                if r.family == fam
-            ]
-
+            fam_records = sorted(
+                [r for r in ref_records if r.family == fam],
+                key=lambda r: int(r.channel)
+            )
             if not fam_records:
-                print(f"[CALIB] No reference records for {fam}. Skipping.")
                 continue
-
-            fam_records = sorted(fam_records, key=lambda r: int(r.channel))
-
             anchor_ch = anchor_channels.get(fam)
             anchor_matches = [r for r in fam_records if r.channel == anchor_ch]
-
             if anchor_matches:
                 anchor_record = sorted(anchor_matches, key=lambda r: r.n, reverse=True)[0]
                 anchor_mu = anchor_record.mu
@@ -1613,379 +1188,278 @@ def make_reference_timing_calibration_pdf(
             else:
                 anchor_mu = float(np.nanmedian([r.mu for r in fam_records]))
                 anchor_label = "family median"
-
             raw_mus = np.array([r.mu for r in fam_records], dtype=float)
-            calibrated_mus = np.array([anchor_mu for _ in fam_records], dtype=float)
             shifts = np.array([anchor_mu - r.mu for r in fam_records], dtype=float)
-
             raw_spread = np.nanstd(raw_mus)
             calibrated_spread = np.nanstd(raw_mus + shifts)
-
             family_title = FAMILY_DISPLAY_NAMES.get(fam, fam)
             family_color = FAMILY_COLORS.get(fam, "black")
-
-            # --------------------------------------------------------
-            # Page 1: Raw overlays
-            # --------------------------------------------------------
-            fig, ax = plt.subplots(figsize=(20, 15))
-
             first = fam_records[0]
+
+            # ── Page 1: Gaussian-only raw ──────────────────────────────────────
+            fig, ax = plt.subplots(figsize=(20, 15))
             ax.set_xlim(*first.xlim)
-            ax.set_ylim(0.0, 1.55)
-
-            setup_paper_axes(
-                ax,
-                "Time of Arrival [ns]",
-                "Normalized Events",
-                particle_type,
-                suffix,
-                llabel="Timing calibration",
-            )
-
+            ax.set_ylim(0.0, 1.40)
+            setup_paper_axes(ax, "Time of Arrival [ns]", "Normalized Events",
+                             particle_type, suffix, llabel="Timing calibration")
             for r in fam_records:
-                ax.step(
-                    r.centers,
-                    r.hist_norm,
-                    where="mid",
-                    lw=1.8,
-                    alpha=0.28,
-                    color=family_color,
-                )
-                ax.plot(
-                    r.x_smooth,
-                    r.y_gauss,
-                    lw=1.8,
-                    alpha=0.45,
-                    color=family_color,
-                )
-
-            ax.axvline(
-                anchor_mu,
-                color="black",
-                linestyle="--",
-                linewidth=3.0,
-                label=rf"{anchor_label}: $\mu$ = {anchor_mu:.2f} ns",
-            )
-
-            ax.text(
-                0.98,
-                0.96,
-                f"{family_title}\nRaw reference timing\nN channels = {len(fam_records)}",
-                transform=ax.transAxes,
-                ha="right",
-                va="top",
-                fontsize=30,
-                bbox=dict(
-                    boxstyle="round,pad=0.30",
-                    facecolor="white",
-                    edgecolor="none",
-                    alpha=0.86,
-                ),
-            )
-
-            ax.text(
-                0.04,
-                0.88,
-                rf"Raw peak spread: $\sigma_\mu$ = {raw_spread:.3f} ns",
-                transform=ax.transAxes,
-                ha="left",
-                va="top",
-                fontsize=28,
-                bbox=dict(
-                    boxstyle="round,pad=0.30",
-                    facecolor="white",
-                    edgecolor="none",
-                    alpha=0.86,
-                ),
-            )
-
-            leg = ax.legend(
-                loc="upper right",
-                bbox_to_anchor=(0.98, 0.78),
-                frameon=True,
-                framealpha=0.88,
-                facecolor="white",
-                edgecolor="none",
-                fontsize=24,
-            )
+                # Gaussian curve only – no histogram
+                ax.plot(r.x_smooth, r.y_gauss,
+                        lw=1.8, alpha=0.45, color=family_color, solid_capstyle="round")
+            ax.axvline(anchor_mu, color="black", linestyle="--", linewidth=3.0,
+                       label=rf"{anchor_label}: $\mu$ = {anchor_mu:.2f} ns")
+            ax.text(0.98, 0.96,
+                    f"{family_title}\nRaw reference timing\nN channels = {len(fam_records)}",
+                    transform=ax.transAxes, ha="right", va="top", fontsize=30,
+                    bbox=dict(boxstyle="round,pad=0.30", facecolor="white",
+                              edgecolor="none", alpha=0.86))
+            ax.text(0.04, 0.88,
+                    rf"Raw peak spread: $\sigma_\mu$ = {raw_spread:.3f} ns",
+                    transform=ax.transAxes, ha="left", va="top", fontsize=28,
+                    bbox=dict(boxstyle="round,pad=0.30", facecolor="white",
+                              edgecolor="none", alpha=0.86))
+            leg = ax.legend(loc="upper right", bbox_to_anchor=(0.98, 0.78),
+                            frameon=True, framealpha=0.88, facecolor="white",
+                            edgecolor="none", fontsize=24)
             style_legend(leg)
-
             fig.subplots_adjust(left=0.10, right=0.98, top=0.92, bottom=0.16)
             pdf.savefig(fig, dpi=220)
             plt.close(fig)
 
-            # --------------------------------------------------------
-            # Page 2: Calibrated overlays
-            # --------------------------------------------------------
+            # ── Page 2: Gaussian-only calibrated ─────────────────────────────
             fig, ax = plt.subplots(figsize=(20, 15))
-
             ax.set_xlim(*first.xlim)
-            ax.set_ylim(0.0, 1.55)
-
-            setup_paper_axes(
-                ax,
-                "Calibrated Time of Arrival [ns]",
-                "Normalized Events",
-                particle_type,
-                suffix,
-                llabel="Timing calibration",
-            )
-
+            ax.set_ylim(0.0, 1.40)
+            setup_paper_axes(ax, "Calibrated Time of Arrival [ns]", "Normalized Events",
+                             particle_type, suffix, llabel="Timing calibration")
             for r in fam_records:
                 shift = anchor_mu - r.mu
-
-                ax.step(
-                    r.centers + shift,
-                    r.hist_norm,
-                    where="mid",
-                    lw=1.8,
-                    alpha=0.28,
-                    color=family_color,
-                )
-                ax.plot(
-                    r.x_smooth + shift,
-                    r.y_gauss,
-                    lw=1.8,
-                    alpha=0.45,
-                    color=family_color,
-                )
-
-            ax.axvline(
-                anchor_mu,
-                color="black",
-                linestyle="--",
-                linewidth=3.0,
-                label=rf"aligned target: $\mu$ = {anchor_mu:.2f} ns",
-            )
-
-            ax.text(
-                0.98,
-                0.96,
-                f"{family_title}\nAfter timing alignment\nN channels = {len(fam_records)}",
-                transform=ax.transAxes,
-                ha="right",
-                va="top",
-                fontsize=30,
-                bbox=dict(
-                    boxstyle="round,pad=0.30",
-                    facecolor="white",
-                    edgecolor="none",
-                    alpha=0.86,
-                ),
-            )
-
-            ax.text(
-                0.04,
-                0.88,
-                rf"Calibrated peak spread: $\sigma_\mu$ = {calibrated_spread:.3f} ns",
-                transform=ax.transAxes,
-                ha="left",
-                va="top",
-                fontsize=28,
-                bbox=dict(
-                    boxstyle="round,pad=0.30",
-                    facecolor="white",
-                    edgecolor="none",
-                    alpha=0.86,
-                ),
-            )
-
-            leg = ax.legend(
-                loc="upper right",
-                bbox_to_anchor=(0.98, 0.78),
-                frameon=True,
-                framealpha=0.88,
-                facecolor="white",
-                edgecolor="none",
-                fontsize=24,
-            )
+                ax.plot(r.x_smooth + shift, r.y_gauss,
+                        lw=1.8, alpha=0.45, color=family_color, solid_capstyle="round")
+            ax.axvline(anchor_mu, color="black", linestyle="--", linewidth=3.0,
+                       label=rf"aligned target: $\mu$ = {anchor_mu:.2f} ns")
+            ax.text(0.98, 0.96,
+                    f"{family_title}\nAfter timing alignment\nN channels = {len(fam_records)}",
+                    transform=ax.transAxes, ha="right", va="top", fontsize=30,
+                    bbox=dict(boxstyle="round,pad=0.30", facecolor="white",
+                              edgecolor="none", alpha=0.86))
+            ax.text(0.04, 0.88,
+                    rf"Calibrated peak spread: $\sigma_\mu$ = {calibrated_spread:.3f} ns",
+                    transform=ax.transAxes, ha="left", va="top", fontsize=28,
+                    bbox=dict(boxstyle="round,pad=0.30", facecolor="white",
+                              edgecolor="none", alpha=0.86))
+            leg = ax.legend(loc="upper right", bbox_to_anchor=(0.98, 0.78),
+                            frameon=True, framealpha=0.88, facecolor="white",
+                            edgecolor="none", fontsize=24)
             style_legend(leg)
-
             fig.subplots_adjust(left=0.10, right=0.98, top=0.92, bottom=0.16)
             pdf.savefig(fig, dpi=220)
             plt.close(fig)
 
-            # --------------------------------------------------------
-            # Page 3: channel-by-channel modes and shifts
-            # --------------------------------------------------------
+            # ── Page 3: channel peak scatter ───────────────────────────────────
             fig, ax = plt.subplots(figsize=(20, 10))
-
             x = np.arange(len(fam_records))
-            labels = [r.channel for r in fam_records]
-
-            ax.plot(
-                x,
-                raw_mus,
-                "o",
-                markersize=8,
-                label="Raw fitted peak",
-                color=family_color,
-                alpha=0.85,
-            )
-
-            ax.plot(
-                x,
-                raw_mus + shifts,
-                "s",
-                markersize=7,
-                label="After calibration",
-                color="black",
-                alpha=0.85,
-            )
-
-            ax.axhline(
-                anchor_mu,
-                color="black",
-                linestyle="--",
-                linewidth=2.5,
-                label=rf"Target = {anchor_mu:.2f} ns",
-            )
-
-            ax.set_title(
-                f"{family_title}: channel timing-peak alignment",
-                fontsize=30,
-                loc="left",
-            )
+            labels_ch = [r.channel for r in fam_records]
+            ax.plot(x, raw_mus, "o", markersize=8, label="Raw fitted peak",
+                    color=family_color, alpha=0.85)
+            ax.plot(x, raw_mus + shifts, "s", markersize=7, label="After calibration",
+                    color="black", alpha=0.85)
+            ax.axhline(anchor_mu, color="black", linestyle="--", linewidth=2.5,
+                       label=rf"Target = {anchor_mu:.2f} ns")
+            ax.set_title(f"{family_title}: channel timing-peak alignment",
+                         fontsize=30, loc="left")
             ax.set_xlabel("Channel", fontsize=28)
             ax.set_ylabel("Fitted peak time [ns]", fontsize=28)
             ax.tick_params(axis="both", labelsize=22)
             ax.grid(False)
-
-            if len(labels) <= 70:
+            if len(labels_ch) <= 70:
                 ax.set_xticks(x)
-                ax.set_xticklabels(labels, rotation=90, fontsize=15)
-
-            ax.text(
-                0.02,
-                0.96,
-                rf"Raw spread: $\sigma_\mu$ = {raw_spread:.3f} ns"
-                "\n"
-                rf"After alignment: $\sigma_\mu$ = {calibrated_spread:.3f} ns",
-                transform=ax.transAxes,
-                ha="left",
-                va="top",
-                fontsize=22,
-                bbox=dict(
-                    boxstyle="round,pad=0.30",
-                    facecolor="white",
-                    edgecolor="none",
-                    alpha=0.88,
-                ),
-            )
-
-            leg = ax.legend(
-                loc="upper right",
-                frameon=True,
-                framealpha=0.88,
-                facecolor="white",
-                edgecolor="none",
-                fontsize=20,
-            )
+                ax.set_xticklabels(labels_ch, rotation=90, fontsize=15)
+            ax.text(0.02, 0.96,
+                    rf"Raw spread: $\sigma_\mu$ = {raw_spread:.3f} ns"
+                    "\n"
+                    rf"After alignment: $\sigma_\mu$ = {calibrated_spread:.3f} ns",
+                    transform=ax.transAxes, ha="left", va="top", fontsize=22,
+                    bbox=dict(boxstyle="round,pad=0.30", facecolor="white",
+                              edgecolor="none", alpha=0.88))
+            leg = ax.legend(loc="upper right", frameon=True, framealpha=0.88,
+                            facecolor="white", edgecolor="none", fontsize=20)
             style_legend(leg)
-
             fig.tight_layout()
             pdf.savefig(fig, dpi=220)
             plt.close(fig)
 
-            # --------------------------------------------------------
-            # Page 4: required channel shifts
-            # --------------------------------------------------------
+            # ── Page 4: required timing shifts ─────────────────────────────────
             fig, ax = plt.subplots(figsize=(20, 10))
-
             ax.axhline(0.0, color="black", linewidth=2.0)
-            ax.plot(
-                x,
-                shifts,
-                "o",
-                markersize=8,
-                color=family_color,
-                alpha=0.85,
-            )
-
-            ax.set_title(
-                f"{family_title}: timing offsets needed for calibration",
-                fontsize=30,
-                loc="left",
-            )
+            ax.plot(x, shifts, "o", markersize=8, color=family_color, alpha=0.85)
+            ax.set_title(f"{family_title}: timing offsets needed for calibration",
+                         fontsize=30, loc="left")
             ax.set_xlabel("Channel", fontsize=28)
             ax.set_ylabel(r"Applied timing shift $\Delta t$ [ns]", fontsize=28)
             ax.tick_params(axis="both", labelsize=22)
             ax.grid(False)
-
-            if len(labels) <= 70:
+            if len(labels_ch) <= 70:
                 ax.set_xticks(x)
-                ax.set_xticklabels(labels, rotation=90, fontsize=15)
+                ax.set_xticklabels(labels_ch, rotation=90, fontsize=15)
+            ax.text(0.02, 0.96,
+                    rf"$\Delta t_{{ch}} = \mu_{{anchor}} - \mu_{{ch}}$"
+                    "\n"
+                    rf"Mean shift = {np.nanmean(shifts):+.3f} ns"
+                    "\n"
+                    rf"Shift RMS = {np.nanstd(shifts):.3f} ns",
+                    transform=ax.transAxes, ha="left", va="top", fontsize=22,
+                    bbox=dict(boxstyle="round,pad=0.30", facecolor="white",
+                              edgecolor="none", alpha=0.88))
+            fig.tight_layout()
+            pdf.savefig(fig, dpi=220)
+            plt.close(fig)
+
+            # ── Page 5: pre-calibration fitted-Gaussian heatmap ───────────────
+            fig, ax = plt.subplots(figsize=(20, 12))
+
+            x_grid = np.linspace(first.xlim[0] - 0.15, first.xlim[1] + 0.15, 600)
+            gaussian_rows = []
+
+            for r in fam_records:
+                sigma_use = max(r.sigma, 1e-6)
+                y = np.exp(-0.5 * ((x_grid - r.mu) / sigma_use) ** 2)
+                gaussian_rows.append(y)
+
+            Z = np.asarray(gaussian_rows)
+
+            gm = ax.imshow(
+                Z,
+                origin="lower",
+                aspect="auto",
+                extent=[
+                    x_grid[0],
+                    x_grid[-1],
+                    -0.5,
+                    len(fam_records) - 0.5,
+                ],
+                cmap="jet",
+                vmin=0.0,
+                vmax=1.0,
+                interpolation="nearest",
+            )
+
+            ax.axvline(anchor_mu, color="white", linestyle="--",
+                       linewidth=2.8, alpha=0.95, zorder=5)
+
+            setup_paper_axes(
+                ax,
+                "Time of Arrival [ns]",
+                "Channel",
+                particle_type,
+                suffix,
+                llabel="Timing calibration",
+            )
+
+            ax.set_yticks(np.arange(len(fam_records)))
+            ax.set_yticklabels([r.channel for r in fam_records], fontsize=13)
 
             ax.text(
-                0.02,
-                0.96,
-                rf"$\Delta t_{{ch}} = \mu_{{anchor}} - \mu_{{ch}}$"
-                "\n"
-                rf"Mean shift = {np.nanmean(shifts):+.3f} ns"
-                "\n"
-                rf"Shift RMS = {np.nanstd(shifts):.3f} ns",
+                0.98, 0.96,
+                f"{family_title} | Pre-calibration\n"
+                rf"Target $\mu$ = {anchor_mu:.2f} ns"
+                f"\nN channels = {len(fam_records)}",
                 transform=ax.transAxes,
-                ha="left",
+                ha="right",
                 va="top",
                 fontsize=22,
                 bbox=dict(
-                    boxstyle="round,pad=0.30",
+                    boxstyle="round,pad=0.35",
                     facecolor="white",
                     edgecolor="none",
                     alpha=0.88,
                 ),
+                zorder=10,
             )
 
-            fig.tight_layout()
+            cbar = fig.colorbar(gm, ax=ax, pad=0.015)
+            cbar.set_label("Fitted Gaussian density", fontsize=24)
+            cbar.ax.tick_params(labelsize=20)
+
+            fig.subplots_adjust(left=0.09, right=0.93, top=0.88, bottom=0.14)
             pdf.savefig(fig, dpi=220)
             plt.close(fig)
-            # --------------------------------------------------------
-            # Page 5: pre-calibration heatmap
-            # --------------------------------------------------------
+
+
+            # ── Page 6: post-calibration fitted-Gaussian heatmap ──────────────
             fig, ax = plt.subplots(figsize=(20, 12))
 
-            im = make_channel_time_heatmap(
-                ax=ax,
-                fam_records=fam_records,
-                anchor_mu=anchor_mu,
-                calibrated=False,
-                family_title=family_title,
-                family_color=family_color,
+            x_grid = np.linspace(first.xlim[0] - 0.15, first.xlim[1] + 0.15, 600)
+            gaussian_rows = []
+
+            for r in fam_records:
+                shift = anchor_mu - r.mu
+                mu_cal = r.mu + shift
+                sigma_use = max(r.sigma, 1e-6)
+
+                y = np.exp(-0.5 * ((x_grid - mu_cal) / sigma_use) ** 2)
+                gaussian_rows.append(y)
+
+            Z = np.asarray(gaussian_rows)
+
+            gm = ax.imshow(
+                Z,
+                origin="lower",
+                aspect="auto",
+                extent=[
+                    x_grid[0],
+                    x_grid[-1],
+                    -0.5,
+                    len(fam_records) - 0.5,
+                ],
+                cmap="jet",
+                vmin=0.0,
+                vmax=1.0,
+                interpolation="nearest",
             )
 
-            if im is not None:
-                cbar = fig.colorbar(im, ax=ax, pad=0.015)
-                cbar.set_label("Normalized events", fontsize=24)
-                cbar.ax.tick_params(labelsize=20)
+            ax.axvline(anchor_mu, color="white", linestyle="--",
+                       linewidth=2.8, alpha=0.95, zorder=5)
 
-            fig.tight_layout()
+            setup_paper_axes(
+                ax,
+                "Calibrated Time of Arrival [ns]",
+                "Channel",
+                particle_type,
+                suffix,
+                llabel="Timing calibration",
+            )
+
+            ax.set_yticks(np.arange(len(fam_records)))
+            ax.set_yticklabels([r.channel for r in fam_records], fontsize=13)
+
+            ax.text(
+                0.98, 0.96,
+                f"{family_title} | Post-calibration\n"
+                rf"Target $\mu$ = {anchor_mu:.2f} ns"
+                f"\nN channels = {len(fam_records)}",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=22,
+                bbox=dict(
+                    boxstyle="round,pad=0.35",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.88,
+                ),
+                zorder=10,
+            )
+
+            cbar = fig.colorbar(gm, ax=ax, pad=0.015)
+            cbar.set_label("Fitted Gaussian density", fontsize=24)
+            cbar.ax.tick_params(labelsize=20)
+
+            fig.subplots_adjust(left=0.09, right=0.93, top=0.88, bottom=0.14)
             pdf.savefig(fig, dpi=220)
             plt.close(fig)
 
-            # --------------------------------------------------------
-            # Page 6: post-calibration heatmap
-            # --------------------------------------------------------
-            fig, ax = plt.subplots(figsize=(20, 12))
-
-            im = make_channel_time_heatmap(
-                ax=ax,
-                fam_records=fam_records,
-                anchor_mu=anchor_mu,
-                calibrated=True,
-                family_title=family_title,
-                family_color=family_color,
-            )
-
-            if im is not None:
-                cbar = fig.colorbar(im, ax=ax, pad=0.015)
-                cbar.set_label("Normalized events", fontsize=24)
-                cbar.ax.tick_params(labelsize=20)
-
-            fig.tight_layout()
-            pdf.savefig(fig, dpi=220)
-            plt.close(fig)
     print(f"[CALIB] Saved: {pdf_path}")
-
 
 
 # ============================================================
@@ -2001,124 +1475,90 @@ def resolve_files(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Make paper-level CaloX Z-scan plots.")
-    parser.add_argument("--ana-files", nargs="+", default=None, help="Explicit list of input ROOT files.")
-    parser.add_argument("--ana-glob", default=None, help="Glob for input ROOT files.")
-    parser.add_argument("--tree", default=TREE_NAME, help="Tree name in ROOT files.")
-    parser.add_argument("--outdir", default="TiminingZscan_summary_forpaper5", help="Output directory.")
-    parser.add_argument("--pid", default="electron", choices=["muon", "pion", "electron", "proton"], help="PID selection.")
-    parser.add_argument("--suffix", default="_LP2_50", help="Timing suffix, e.g. _LP2_50. Used for branch lookup only; not printed on plots.")
-    parser.add_argument("--nbins", type=int, default=100, help="Histogram bins for paper overlays.")
-    parser.add_argument("--min-events", type=int, default=25, help="Minimum entries required for a fit.")
-    parser.add_argument("--sci-channels", choices=["all", "selected"], default="all", help="Use all SCI channels or the selected subset from your older script.")
-    parser.add_argument("--no-wc-cut", action="store_true", help="Disable wirechamber cut.")
-    parser.add_argument("--no-individual", action="store_true", help="Do not save individual PNG/PDF files for every channel.")
-    parser.add_argument("--run-overlay", default="run1501", help="Run substring for the 107/100/104 anchor overlay.")
-    parser.add_argument("--cache-root", default=None, help="ROOT cache containing fitted records. If omitted, a cache is written/read from the output directory.")
-    parser.add_argument("--rebuild-cache", action="store_true", help="Ignore any existing fitted-record cache and rerun the analysis.")
-
+    parser.add_argument("--ana-files", nargs="+", default=None)
+    parser.add_argument("--ana-glob", default=None)
+    parser.add_argument("--tree", default=TREE_NAME)
+    parser.add_argument("--outdir", default="TiminingZscan_summary_forpaper5")
+    parser.add_argument("--pid", default="electron",
+                        choices=["muon", "pion", "electron", "proton"])
+    parser.add_argument("--suffix", default="_LP2_50")
+    parser.add_argument("--nbins", type=int, default=100)
+    parser.add_argument("--min-events", type=int, default=25)
+    parser.add_argument("--sci-channels", choices=["all", "selected"], default="all")
+    parser.add_argument("--no-wc-cut", action="store_true")
+    parser.add_argument("--no-individual", action="store_true")
+    parser.add_argument("--run-overlay", default="run1501")
+    parser.add_argument("--cache-root", default=None)
+    parser.add_argument("--rebuild-cache", action="store_true")
     args = parser.parse_args()
 
     apply_paper_style()
     os.makedirs(args.outdir, exist_ok=True)
-
     families = build_families(args.sci_channels)
-    cache_root = args.cache_root or default_cache_root_path(args.outdir, args.pid, args.suffix, args.sci_channels)
+    cache_root = args.cache_root or default_cache_root_path(
+        args.outdir, args.pid, args.suffix, args.sci_channels)
 
     print("\n[INIT] Paper-level CaloX Z-scan plotting")
-    print(f"[INIT] Output directory: {args.outdir}")
-    print(f"[INIT] PID: {args.pid}")
-    print(f"[INIT] Timing suffix for branch lookup: {args.suffix}")
-    print(f"[INIT] SCI channel mode: {args.sci_channels}")
-    print(f"[INIT] Wirechamber cut: {'OFF' if args.no_wc_cut else 'ON'}")
-    print(f"[INIT] ROOT cache: {cache_root}")
+    print(f"[INIT] Output directory : {args.outdir}")
+    print(f"[INIT] PID              : {args.pid}")
+    print(f"[INIT] Timing suffix    : {args.suffix}")
+    print(f"[INIT] SCI channel mode : {args.sci_channels}")
+    print(f"[INIT] WC cut           : {'OFF' if args.no_wc_cut else 'ON'}")
+    print(f"[INIT] ROOT cache       : {cache_root}")
 
-    
     if os.path.exists(cache_root) and not args.rebuild_cache:
         records = read_records_root_cache(cache_root)
-
         if args.sci_channels == "selected":
             selected_sci = set(SCI_SELECTED_CHANNELS)
-            records = [
-                r for r in records
-                if (r.family != "SCI") or (r.channel in selected_sci)
-            ]
+            records = [r for r in records
+                       if (r.family != "SCI") or (r.channel in selected_sci)]
     else:
         if args.ana_files is None and args.ana_glob is None:
             raise SystemExit(
-                "[FATAL] Provide --ana-files/--ana-glob for the first run, "
-                "or provide an existing --cache-root for plot-only reruns."
+                "[FATAL] Provide --ana-files/--ana-glob for first run, "
+                "or --cache-root for plot-only reruns."
             )
-
         files = resolve_files(args)
         if not files:
             raise SystemExit("[FATAL] No files matched your input.")
-
         print(f"[INIT] Number of input files: {len(files)}")
-
         records = collect_fit_records(
-            files=files,
-            tree_name=args.tree,
-            particle_type=args.pid,
-            suffix=args.suffix,
-            families=families,
-            nbins=args.nbins,
-            min_events=args.min_events,
-            use_wc_cut=(not args.no_wc_cut),
+            files=files, tree_name=args.tree, particle_type=args.pid,
+            suffix=args.suffix, families=families, nbins=args.nbins,
+            min_events=args.min_events, use_wc_cut=(not args.no_wc_cut),
         )
-
         if not records:
-            raise SystemExit("[FATAL] No successful fits were produced. Check input files, branch names, PID cuts, and windows.")
-
+            raise SystemExit("[FATAL] No successful fits produced.")
         write_records_root_cache(records, cache_root)
 
     if not records:
         raise SystemExit("[FATAL] No records available for plotting.")
 
-    table_path = os.path.join(args.outdir, "timing_gaussian_fit_summary.csv")
-    write_fit_table(records, table_path)
+    # write_fit_table(records, os.path.join(args.outdir, "timing_gaussian_fit_summary.csv"))
 
-    make_velocity_z_toa_plot(
-        records=records,
-        outdir=args.outdir,
-        pid_label=args.pid,
-        particle_type=args.pid,
-        suffix=args.suffix,
-        families=families,
-    )
+    # make_velocity_z_toa_plot(records=records, outdir=args.outdir, pid_label=args.pid,
+    #                          particle_type=args.pid, suffix=args.suffix, families=families)
 
-    make_all_channel_location_overlays(
-        records=records,
-        outdir=args.outdir,
-        particle_type=args.pid,
-        suffix=args.suffix,
-        save_individual=(not args.no_individual),
-    )
+    # make_all_channel_location_overlays(records=records, outdir=args.outdir,
+    #                                    particle_type=args.pid, suffix=args.suffix,
+    #                                    save_individual=(not args.no_individual))
 
-    make_run1501_anchor_overlay(
-        records=records,
-        outdir=args.outdir,
-        particle_type=args.pid,
-        suffix=args.suffix,
-        run_substring=args.run_overlay,
-    )
-
+    make_run1501_anchor_overlay(records=records, outdir=args.outdir,
+                                particle_type=args.pid, suffix=args.suffix,
+                                run_substring=args.run_overlay)
 
     make_reference_timing_calibration_pdf(
-        records=records,
-        outdir=args.outdir,
-        particle_type=args.pid,
-        suffix=args.suffix,
+        records=records, outdir=args.outdir,
+        particle_type=args.pid, suffix=args.suffix,
         run_substring=args.run_overlay,
         pdf_name=f"timing_calibration_reference_only_{args.run_overlay}.pdf",
     )
 
     make_clean_zscan_diagram(args.outdir)
-    make_clean_zscan_diagram(args.outdir)
 
-    print("\n[DONE] Paper-level Z-scan outputs saved to:")
+    print("\n[DONE] Outputs saved to:")
     print(f"       {args.outdir}")
-    print(f"[DONE] Reuse this cache for plot-only tweaks:")
-    print(f"       --cache-root {cache_root}")
+    print(f"[DONE] Reuse cache:  --cache-root {cache_root}")
 
 
 if __name__ == "__main__":
