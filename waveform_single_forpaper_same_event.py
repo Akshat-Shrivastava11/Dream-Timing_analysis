@@ -57,6 +57,47 @@ except ImportError:
     HEP_AVAILABLE = False
 
 # =============================================================================
+# PAPER STYLE  (mirrors PrecisionTiming_paperplots3.py)
+# =============================================================================
+AXIS_LABEL_FONTSIZE   = 30
+TICK_LABEL_FONTSIZE   = 24
+CMS_LABEL_FONTSIZE    = 26
+TITLE_FONTSIZE        = 26
+LEGEND_FONTSIZE       = 20
+ANNOTATION_FONTSIZE   = 22
+
+
+def apply_paper_style():
+    plt.rcParams.update({
+        "figure.dpi":           120,
+        "savefig.dpi":          300,
+        "font.size":            24,
+        "axes.labelsize":       AXIS_LABEL_FONTSIZE,
+        "axes.titlesize":       TITLE_FONTSIZE,
+        "xtick.labelsize":      TICK_LABEL_FONTSIZE,
+        "ytick.labelsize":      TICK_LABEL_FONTSIZE,
+        "legend.fontsize":      LEGEND_FONTSIZE,
+        "font.weight":          "normal",
+        "axes.labelweight":     "normal",
+        "axes.titleweight":     "normal",
+        "lines.linewidth":      2.8,
+        "axes.linewidth":       1.6,
+        "xtick.major.size":     10,
+        "ytick.major.size":     10,
+        "xtick.minor.size":     5,
+        "ytick.minor.size":     5,
+        "xtick.major.width":    1.6,
+        "ytick.major.width":    1.6,
+        "xtick.minor.width":    1.2,
+        "ytick.minor.width":    1.2,
+        "xtick.direction":      "in",
+        "ytick.direction":      "in",
+        "xtick.top":            True,
+        "ytick.right":          True,
+    })
+
+
+# =============================================================================
 # GLOBAL CONFIG
 # =============================================================================
 TREE_NAME     = "EventTree"
@@ -65,7 +106,7 @@ BASELINE_BINS = 30            # leading bins used for baseline estimate
 TIMING_SUFFIX = "_LP2_50"     # branch suffix storing t50 [ns]
 AMP_THRESHOLD = 100.0         # min baseline-subtracted peak  [ADC]
 MIN_ADC_CUT   = -100.0        # max allowed trough (rejects saturated / noisy)
-N_WAVEFORMS   = 1000           # default waveforms per combination
+N_WAVEFORMS   = 1000          # default waveforms per combination
 
 # Display window around t50 — x-axis is absolute time [ns]
 TWINDOW_LEFT  = 15.0          # ns before t50
@@ -94,10 +135,11 @@ RUN_ENERGY_MAP = {
 CHANNELS_3MM = {"Quartz": "104", "Plastic": "010", "Scintillator": "107"}
 CHANNELS_6MM = {"Quartz": "604", "Plastic": "606", "Scintillator": "615"}
 
+# Match the color palette from PrecisionTiming_paperplots3.py
 FAMILY_COLORS = {
-    "Quartz":       "tab:orange",
-    "Plastic":      "tab:blue",
-    "Scintillator": "tab:red",
+    "Quartz":       "#f89c20",   # orange-gold
+    "Plastic":      "#e42536",   # red
+    "Scintillator": "#5790fc",   # blue
 }
 
 FAMILY_DISPLAY = {
@@ -200,8 +242,10 @@ def get_beam_energy(run_number):
     return RUN_ENERGY_MAP.get(run_number, DEFAULT_ENERGY) if run_number is not None else DEFAULT_ENERGY
 
 def display_particle(p):
-    if p.lower() == "electron":       return "Positron"
-    if p.lower() == "electron_90deg": return "Positron (90°)"
+    if p.lower() == "electron":        return r"$e^{+}$"
+    if p.lower() == "electron_90deg":  return r"$e^{+}$ (90°)"
+    if p.lower() == "muon":            return r"$\mu$"
+    if p.lower() == "pion":            return r"$\pi$"
     return p.capitalize()
 
 def modal_t50(t50_values):
@@ -332,76 +376,126 @@ def collect_valid_events_multi(fpath, chan_map, particle):
     return records
 
 # =============================================================================
-# DRAW ONE PAGE  (3 subplots for one event)
+# DRAW ONE PAGE  (3 subplots for one event, paper-quality style)
 # =============================================================================
 
-def draw_event_page(fig, record, thickness, particle, page_num, total, chan_map):
-    axes    = fig.subplots(1, 3, sharey=False)
+def setup_paper_axes(ax, xlabel, ylabel, is_leftmost=False):
+    """Apply paper-quality axis formatting matching PrecisionTiming_paperplots3."""
+    ax.set_xlabel(xlabel, fontsize=AXIS_LABEL_FONTSIZE, fontweight="normal", loc="right")
+    if is_leftmost:
+        ax.set_ylabel(ylabel, fontsize=AXIS_LABEL_FONTSIZE, fontweight="normal", loc="top")
+    ax.tick_params(axis="both", which="major",
+                   labelsize=TICK_LABEL_FONTSIZE, length=10, width=1.6,
+                   direction="in", top=True, right=True)
+    ax.tick_params(axis="both", which="minor",
+                   length=5, width=1.2, direction="in", top=True, right=True)
+    ax.minorticks_on()
+    ax.grid(False)
+
+
+def draw_event_page(fig, axes, record, thickness, particle, page_num, total, chan_map):
     rnum    = record["run_number"]
-    rl      = record["run_label"]
     ev      = record["event_index"]
     energy  = get_beam_energy(rnum)
     ref_t50 = record["ref_t50_ns"]
 
     disp_p  = display_particle(particle)
-    r_label = (f"{energy:.0f} GeV {disp_p} | {thickness} | "
-               f"Event {ev}  ({page_num}/{total})")
 
-    for ax, family in zip(axes, SUBPLOT_FAMILIES):
+    for ax_idx, (ax, family) in enumerate(zip(axes, SUBPLOT_FAMILIES)):
         fd    = record["families"][family]
         color = FAMILY_COLORS.get(family, "tab:gray")
         code  = chan_map.get(family, "???")
+        is_leftmost = (ax_idx == 0)
 
         if fd["waveform"] is None:
             ax.text(0.5, 0.5, f"{family}\n(no branch data)",
-                    ha="center", va="center", transform=ax.transAxes, fontsize=12)
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=ANNOTATION_FONTSIZE)
         else:
-            wf    = fd["waveform"]
-            t50   = fd["t50_ns"]   # this family's own t50 (may be nan)
+            wf  = fd["waveform"]
+            t50 = fd["t50_ns"]
 
             # Absolute time axis
             t_abs = np.arange(len(wf)) * TIME_PER_BIN
 
-            # Window centred on ref_t50 (= first family with a pulse)
-            win   = (t_abs >= ref_t50 - TWINDOW_LEFT) & (t_abs <= ref_t50 + TWINDOW_RIGHT)
+            # Window centred on ref_t50
+            win = (t_abs >= ref_t50 - TWINDOW_LEFT) & (t_abs <= ref_t50 + TWINDOW_RIGHT)
 
-            ax.plot(t_abs[win], wf[win], color=color, lw=1.8)
+            ax.plot(t_abs[win], wf[win], color=color, lw=2.0,
+                    solid_capstyle="round")
 
-            # Mark this family's own t50 if available
+            # Dashed t50 line + top-right text label (matches screenshot style)
             if np.isfinite(t50):
-                ax.axvline(t50, color="black", ls="--", lw=1.5, alpha=0.80,
-                           label=rf"$t_{{50}}$ = {t50:.2f} ns")
-                ax.legend(fontsize=9, frameon=False, loc="upper right")
+                ax.axvline(t50, color="black", ls="--", lw=1.6, alpha=0.80)
+                ax.text(
+                    0.98, 0.965,
+                    rf"$\mathrm{{---}}\ t_{{50}}$",
+                    transform=ax.transAxes,
+                    ha="right", va="top",
+                    fontsize=LEGEND_FONTSIZE,
+                    color="black",
+                )
 
             ax.set_xlim(ref_t50 - TWINDOW_LEFT, ref_t50 + TWINDOW_RIGHT)
 
-        # Axis styling
-        ax.set_xlabel("Time [ns]", fontsize=13)
-        if family == SUBPLOT_FAMILIES[0]:
-            ax.set_ylabel("ADC counts (baseline subtracted)", fontsize=12)
-
-        ax.minorticks_on()
-        ax.tick_params(axis="both", which="major", labelsize=11, length=7,
-                       direction="in", top=True, right=True)
-        ax.tick_params(axis="both", which="minor", length=4,
-                       direction="in", top=True, right=True)
-
-        pulse_tag = "✓ pulse" if fd["has_pulse"] else "✗ no pulse"
-        ax.set_title(
-            f"{family}  —  {FAMILY_DISPLAY.get(family, '')}\n"
-            f"ch {code}   {pulse_tag}",
-            fontsize=10,
+        # Paper-quality axis formatting
+        setup_paper_axes(
+            ax,
+            xlabel="Time [ns]",
+            ylabel="ADC (baseline sub.)",
+            is_leftmost=is_leftmost,
         )
 
-    # CMS label centred above middle subplot
+        # Family name — top-right below t50 label, plain rectangle outline
+        family_title = FAMILY_DISPLAY.get(family, family)
+        ax.text(
+            0.98, 0.865,
+            family_title,
+            transform=ax.transAxes,
+            ha="right", va="top",
+            fontsize=ANNOTATION_FONTSIZE,
+            fontweight="normal",
+            bbox=dict(boxstyle="square,pad=0.25", facecolor="white",
+                      edgecolor="black", linewidth=0.8, alpha=1.0),
+            zorder=10,
+        )
+
+    # ── CaloX on the top-left (anchored to axes[0]); run info as figure-level
+    #    right-aligned text — keeps both labels from ever colliding. ────────────
+    r_label = f"{energy:.0f} GeV {disp_p} | {thickness} | Event {ev}"
+
     if HEP_AVAILABLE:
         try:
-            hep.cms.label(ax=axes[1], exp="CaloX", data=False,
-                          rlabel=r_label, llabel="")
+            # Place only the experiment stamp on the leftmost axis.
+            # rlabel="" so nothing appears on the right side of axes[0].
+            hep.cms.label(
+                ax=axes[0],
+                exp="CaloX",
+                data=True,
+                label="",
+                rlabel="",
+                fontsize=CMS_LABEL_FONTSIZE,
+            )
         except Exception:
-            fig.suptitle(f"CaloX — {r_label}", fontsize=11, y=1.01)
-    else:
-        fig.suptitle(f"CaloX — {r_label}", fontsize=11, y=1.01)
+            axes[0].text(
+                0.0, 1.02, "CaloX",
+                transform=axes[0].transAxes,
+                ha="left", va="bottom",
+                fontsize=CMS_LABEL_FONTSIZE,
+                fontweight="bold",
+            )
+
+    # Run info: pinned to the top-right corner of the figure in figure coords.
+    # axes[2] right edge ≈ right=0.98 from subplots_adjust, top ≈ 0.88 → 1.0
+    # Use axes[2].transAxes → figure transform for exact right-edge alignment.
+    axes[2].text(
+        1.0, 1.02,
+        r_label,
+        transform=axes[2].transAxes,
+        ha="right", va="bottom",
+        fontsize=CMS_LABEL_FONTSIZE,
+        fontweight="normal",
+    )
 
 # =============================================================================
 # CSV SCHEMAS
@@ -467,11 +561,13 @@ def process_combination(thickness, particle, files, chan_map, outdir, n_waves):
             ref_t50 = record["ref_t50_ns"]
 
             # ── PDF page ──────────────────────────────────────────────────
-            fig = plt.figure(figsize=(18, 6))
-            draw_event_page(fig, record, thickness, particle,
+            # Landscape: wide figure, tighter vertical margins
+            fig, axes = plt.subplots(1, 3, sharey=False, figsize=(30, 7))
+            fig.subplots_adjust(left=0.05, right=0.99, top=0.88,
+                                bottom=0.14, wspace=0.25)
+            draw_event_page(fig, axes, record, thickness, particle,
                             page, len(chosen), chan_map)
-            fig.tight_layout()
-            pdf.savefig(fig, bbox_inches="tight")
+            pdf.savefig(fig, bbox_inches="tight", dpi=200)
             plt.close(fig)
 
             # ── Index CSV row ──────────────────────────────────────────────
@@ -503,7 +599,7 @@ def process_combination(thickness, particle, files, chan_map, outdir, n_waves):
                 "peak_Scintillator_adc": fmt_peak(fd_s),
             })
 
-            # ── Waveform CSV rows  (same schema as original) ───────────────
+            # ── Waveform CSV rows ──────────────────────────────────────────
             rnum_str = str(rnum) if rnum is not None else ""
             for family in SUBPLOT_FAMILIES:
                 fd = record["families"][family]
@@ -551,6 +647,7 @@ def main():
                     help="Restrict to one thickness       (default: both)")
     args = ap.parse_args()
 
+    apply_paper_style()
     os.makedirs(args.outdir, exist_ok=True)
 
     for thickness, particles in RUN_FILES.items():
