@@ -382,6 +382,25 @@ def read_records_root_cache(cache_root: str) -> List[FitRecord]:
     return records
 
 
+def fix_bottom_left_tick_overlap(ax):
+    """
+    Prevent the bottom-left x/y tick labels from overlapping.
+    Useful when the first x tick label, e.g. -14.5, collides with y=0.0.
+    """
+    # Add breathing room between tick marks and labels
+    ax.tick_params(axis="x", which="major", pad=10)
+    ax.tick_params(axis="y", which="major", pad=10)
+
+    # Move the leftmost x tick label inward/rightward
+    xticklabels = ax.get_xticklabels()
+    if xticklabels:
+        xticklabels[0].set_horizontalalignment("left")
+
+    # Move the lowest y tick label slightly upward
+    yticklabels = ax.get_yticklabels()
+    if yticklabels:
+        yticklabels[0].set_verticalalignment("bottom")
+
 # ============================================================
 # Selection and timing helpers
 # ============================================================
@@ -699,6 +718,7 @@ def plot_one_channel_overlay(ax, recs: List[FitRecord], particle_type, suffix,
 
     setup_paper_axes(ax, "Time of Arrival [ns]", "Normalized Events", particle_type, suffix)
 
+    fix_bottom_left_tick_overlap(ax)
     handles, labels = [], []
     for r in recs:
         color = location_colors.get(r.z_mm, "black")
@@ -1534,14 +1554,14 @@ def main():
     if not records:
         raise SystemExit("[FATAL] No records available for plotting.")
 
-    # write_fit_table(records, os.path.join(args.outdir, "timing_gaussian_fit_summary.csv"))
+    write_fit_table(records, os.path.join(args.outdir, "timing_gaussian_fit_summary.csv"))
 
-    # make_velocity_z_toa_plot(records=records, outdir=args.outdir, pid_label=args.pid,
-    #                          particle_type=args.pid, suffix=args.suffix, families=families)
+    make_velocity_z_toa_plot(records=records, outdir=args.outdir, pid_label=args.pid,
+                             particle_type=args.pid, suffix=args.suffix, families=families)
 
-    # make_all_channel_location_overlays(records=records, outdir=args.outdir,
-    #                                    particle_type=args.pid, suffix=args.suffix,
-    #                                    save_individual=(not args.no_individual))
+    make_all_channel_location_overlays(records=records, outdir=args.outdir,
+                                       particle_type=args.pid, suffix=args.suffix,
+                                       save_individual=(not args.no_individual))
 
     make_run1501_anchor_overlay(records=records, outdir=args.outdir,
                                 particle_type=args.pid, suffix=args.suffix,
