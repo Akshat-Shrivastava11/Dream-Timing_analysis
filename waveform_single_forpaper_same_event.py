@@ -106,7 +106,7 @@ BASELINE_BINS = 30            # leading bins used for baseline estimate
 TIMING_SUFFIX = "_LP2_50"     # branch suffix storing t50 [ns]
 AMP_THRESHOLD = 100.0         # min baseline-subtracted peak  [ADC]
 MIN_ADC_CUT   = -100.0        # max allowed trough (rejects saturated / noisy)
-N_WAVEFORMS   = 1000          # default waveforms per combination
+N_WAVEFORMS   = 1000        # default waveforms per combination
 
 # Display window around t50 — x-axis is absolute time [ns]
 TWINDOW_LEFT  = 15.0          # ns before t50
@@ -498,6 +498,90 @@ def draw_event_page(fig, axes, record, thickness, particle, page_num, total, cha
     )
 
 # =============================================================================
+# DRAW OVERLAY PAGE  (all 3 families on one 4:3 axis, per event)
+# =============================================================================
+
+def draw_overlay_page(fig, ax, record, thickness, particle, chan_map):
+    """Single 4:3 panel with all three family waveforms overlaid."""
+    rnum    = record["run_number"]
+    ev      = record["event_index"]
+    energy  = get_beam_energy(rnum)
+    ref_t50 = record["ref_t50_ns"]
+    disp_p  = display_particle(particle)
+
+    legend_handles = []
+    legend_labels  = []
+
+    for family in SUBPLOT_FAMILIES:
+        fd    = record["families"][family]
+        color = FAMILY_COLORS.get(family, "tab:gray")
+        if fd["waveform"] is None:
+            continue
+
+        wf    = fd["waveform"]
+        t50   = fd["t50_ns"]
+        t_abs = np.arange(len(wf)) * TIME_PER_BIN
+        win   = (t_abs >= ref_t50 - TWINDOW_LEFT) & (t_abs <= ref_t50 + TWINDOW_RIGHT)
+
+        wf_win = wf[win]
+        peak   = np.max(np.abs(wf_win))
+        wf_norm = wf_win / peak if peak > 0 else wf_win
+
+        line, = ax.plot(t_abs[win], wf_norm, color=color, lw=2.0,
+                        solid_capstyle="round",
+                        label=FAMILY_DISPLAY.get(family, family))
+        legend_handles.append(line)
+        legend_labels.append(FAMILY_DISPLAY.get(family, family))
+
+        # Per-family t50 dashed vertical line in its own colour
+        if np.isfinite(t50):
+            ax.axvline(t50, color=color, ls="--", lw=1.4, alpha=0.75)
+
+    ax.set_xlim(ref_t50 - TWINDOW_LEFT, ref_t50 + TWINDOW_RIGHT)
+
+    # Paper-quality axis formatting
+    ax.set_xlabel("Time [ns]", fontsize=AXIS_LABEL_FONTSIZE,
+                  fontweight="normal", loc="right")
+    ax.set_ylabel("A.U.", fontsize=AXIS_LABEL_FONTSIZE,
+                  fontweight="normal", loc="top")
+    ax.tick_params(axis="both", which="major",
+                   labelsize=TICK_LABEL_FONTSIZE, length=10, width=1.6,
+                   direction="in", top=True, right=True)
+    ax.tick_params(axis="both", which="minor",
+                   length=5, width=1.2, direction="in", top=True, right=True)
+    ax.minorticks_on()
+    ax.grid(False)
+
+    # Legend — upper right, plain rectangle border, slightly smaller font
+    leg = ax.legend(legend_handles, legend_labels,
+                    loc="upper right", fontsize=LEGEND_FONTSIZE - 4,
+                    frameon=True, fancybox=False, framealpha=1.0,
+                    facecolor="white", edgecolor="black",
+                    borderpad=0.5, labelspacing=0.4, handlelength=2.0)
+    for text in leg.get_texts():
+        text.set_fontweight("normal")
+
+    # CaloX stamp top-left; run info top-right via ax.text
+    r_label = f"{energy:.0f} GeV {disp_p} | {thickness} | Event {ev}"
+    if HEP_AVAILABLE:
+        try:
+            hep.cms.label(ax=ax, exp="CaloX", data=True,
+                          label="", rlabel=r_label,
+                          fontsize=CMS_LABEL_FONTSIZE)
+        except Exception:
+            ax.text(0.0, 1.02, "CaloX", transform=ax.transAxes,
+                    ha="left", va="bottom", fontsize=CMS_LABEL_FONTSIZE,
+                    fontweight="bold")
+            ax.text(1.0, 1.02, r_label, transform=ax.transAxes,
+                    ha="right", va="bottom", fontsize=CMS_LABEL_FONTSIZE,
+                    fontweight="normal")
+    else:
+        ax.text(0.0, 1.02, f"CaloX   {r_label}", transform=ax.transAxes,
+                ha="left", va="bottom", fontsize=CMS_LABEL_FONTSIZE,
+                fontweight="normal")
+
+
+# =============================================================================
 # CSV SCHEMAS
 # =============================================================================
 INDEX_HEADER = [
@@ -538,13 +622,15 @@ def process_combination(thickness, particle, files, chan_map, outdir, n_waves):
     print(f"         Modal ref t50      : {mode:.3f} ns")
     print(f"         Writing            : {len(chosen)} pages")
 
-    safe_p    = particle.replace("_", "")
-    stem      = f"Waveforms_{thickness}_{safe_p}_{len(chosen)}events"
-    pdf_path  = os.path.join(outdir, stem + ".pdf")
-    idx_path  = os.path.join(outdir, stem + "_index.csv")
-    wave_path = os.path.join(outdir, stem + "_waveforms.csv")
+    safe_p       = particle.replace("_", "")
+    stem         = f"Waveforms_{thickness}_{safe_p}_{len(chosen)}events"
+    pdf_path     = os.path.join(outdir, stem + ".pdf")
+    overlay_path = os.path.join(outdir, stem + "_overlay.pdf")
+    idx_path     = os.path.join(outdir, stem + "_index.csv")
+    wave_path    = os.path.join(outdir, stem + "_waveforms.csv")
 
     with (PdfPages(pdf_path) as pdf,
+          PdfPages(overlay_path) as pdf_ov,
           open(idx_path,  "w", newline="") as idx_fh,
           open(wave_path, "w", newline="") as wave_fh):
 
@@ -560,8 +646,7 @@ def process_combination(thickness, particle, files, chan_map, outdir, n_waves):
             energy  = get_beam_energy(rnum)
             ref_t50 = record["ref_t50_ns"]
 
-            # ── PDF page ──────────────────────────────────────────────────
-            # Landscape: wide figure, tighter vertical margins
+            # ── PDF page (landscape 3-subplot) ────────────────────────────
             fig, axes = plt.subplots(1, 3, sharey=False, figsize=(30, 7))
             fig.subplots_adjust(left=0.05, right=0.99, top=0.88,
                                 bottom=0.14, wspace=0.25)
@@ -569,6 +654,13 @@ def process_combination(thickness, particle, files, chan_map, outdir, n_waves):
                             page, len(chosen), chan_map)
             pdf.savefig(fig, bbox_inches="tight", dpi=200)
             plt.close(fig)
+
+            # ── PDF page (overlay, 4:3 single panel) ──────────────────────
+            fig_ov, ax_ov = plt.subplots(1, 1, figsize=(10, 7.5))
+            fig_ov.subplots_adjust(left=0.10, right=0.97, top=0.88, bottom=0.13)
+            draw_overlay_page(fig_ov, ax_ov, record, thickness, particle, chan_map)
+            pdf_ov.savefig(fig_ov, bbox_inches="tight", dpi=200)
+            plt.close(fig_ov)
 
             # ── Index CSV row ──────────────────────────────────────────────
             def fmt_t50(fd):
@@ -620,9 +712,10 @@ def process_combination(thickness, particle, files, chan_map, outdir, n_waves):
                         "adc":           f"{adc_val:.4f}",
                     })
 
-    print(f"  [OK] PDF   → {pdf_path}")
-    print(f"  [OK] Index → {idx_path}")
-    print(f"  [OK] Waves → {wave_path}")
+    print(f"  [OK] PDF     → {pdf_path}")
+    print(f"  [OK] Overlay → {overlay_path}")
+    print(f"  [OK] Index   → {idx_path}")
+    print(f"  [OK] Waves   → {wave_path}")
 
 # =============================================================================
 # DRIVER
