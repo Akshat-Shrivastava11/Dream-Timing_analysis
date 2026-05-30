@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """
-Delta-T measurement between left and right channels of the same detector row.
+Delta-T timing-resolution measurement for the six possible channel
+combinations within each selected detector family row.
 
-For each left-right pair (same row, mirrored side) we compute:
-    Δt = t_right - t_left
-on the same events (event-by-event), fit a Gaussian, and report the sigma
-as the combined timing resolution.
+For each family, four channels are selected, giving:
+    C(4, 2) = 6 combinations
+
+For each combination we compute event-by-event:
+    Δt = t_second - t_first
+fit a Gaussian to the Δt distribution, and report sigma as the combined
+pair timing resolution.
+
+Default family rows:
+    Quartz  : 106, 104, 306, 304
+    Plastic : 102, 100, 302, 300
 
 Usage:
-    python delta_t_leftright_pairs.py \
-        --ana-file /path/to/run1501_XXXXXXXXX.root \
-        --outdir   ./DeltaT_LR_Pairs \
-        --pid      electron
+python3 Timing90_DeltaT.py --ana-file /lustre/research/hep/akshriva/Dream-Timing/PostTimingFitsNtuples/run1501_250928105227_converted_timingskim.root          --outdir   ./DeltaT_LR_Pairs         --pid      electron
 """
 
 import os
 import re
 import argparse
+from itertools import combinations
 import numpy as np
 import uproot
 import awkward as ak
@@ -72,30 +78,48 @@ FAMILY_DISPLAY = {
 }
 
 # ============================================================
-# Build left-right pairs from a grid
-# The grid has 4 columns: [left-outer, left-inner, right-inner, right-outer]
-# We pair col0↔col2 and col1↔col3 within each row.
+# Six possible combinations per family
+# For a 4-channel family row, C(4, 2) = 6 combinations.
+# These rows contain the usual run1501 anchor channels 104 and 100.
 # ============================================================
-def build_lr_pairs(grid, family_name):
+def build_grid_row_combinations(grid, require_complete_rows=True):
     """
-    Returns list of (left_ch, right_ch) tuples for a 4-column detector grid.
-    Columns 0 & 1 are the left side, columns 2 & 3 are the right side.
-    Pairing: col0↔col2, col1↔col3
+    Build all C(4,2)=6 combinations for every complete 4-channel grid row.
+
+    If require_complete_rows=True:
+        only rows with all 4 channels are used.
+
+    If require_complete_rows=False:
+        partial rows are also used, giving C(N,2) for N available channels.
     """
     pairs = []
-    for row in grid:
-        # pad row to length 4 if needed
+
+    for irow, row in enumerate(grid):
         row4 = list(row) + [None] * (4 - len(row))
-        c0, c1, c2, c3 = row4[0], row4[1], row4[2], row4[3]
-        if c0 is not None and c2 is not None:
-            pairs.append((c0, c2))
-        if c1 is not None and c3 is not None:
-            pairs.append((c1, c3))
+        valid_channels = [ch for ch in row4 if ch is not None]
+
+        if require_complete_rows and len(valid_channels) != 4:
+            print(
+                f"[GRID] Skipping incomplete row {irow}: {row4}",
+                flush=True
+            )
+            continue
+
+        row_pairs = list(combinations(valid_channels, 2))
+
+        print(
+            f"[GRID] Row {irow}: channels={valid_channels} -> {len(row_pairs)} pairs",
+            flush=True
+        )
+
+        pairs.extend(row_pairs)
+
     return pairs
 
+
 ALL_PAIRS = {
-    "Quartz":  build_lr_pairs(QUARTZ_GRID,  "Quartz"),
-    "Plastic": build_lr_pairs(PLASTIC_GRID, "Plastic"),
+    "Quartz":  build_grid_row_combinations(QUARTZ_GRID,  require_complete_rows=True),
+    "Plastic": build_grid_row_combinations(PLASTIC_GRID, require_complete_rows=True),
 }
 
 # ============================================================
@@ -165,27 +189,51 @@ def compute_pid_mask(tree, particle_type):
             print(f"  [WARN] PID cut failed for {det}: {e}")
     return mask
 
+
+
+
+
+TIMING_CACHE = {}
+AMP_CACHE = {}
+KEYS_CACHE = None
+
+def get_tree_keys(tree):
+    global KEYS_CACHE
+    if KEYS_CACHE is None:
+        KEYS_CACHE = set(tree.keys())
+    return KEYS_CACHE
+
 # ============================================================
 # Timing extraction  (same formula as main script)
 # ============================================================
 def get_tfinal(tree, b, g, c):
-    """
-    t_final(b,g,c) = (t_{b,g,c} - t_{b,g,8}) - (t_{0,3,7} - t_{0,3,8})
-    """
+    code_key = f"{b}{g}{c}"
+    if code_key in TIMING_CACHE:
+        return TIMING_CACHE[code_key]
+
     br_sig     = f"DRS_Board{b}_Group{g}_Channel{c}{SUFFIX}"
     br_sig_ref = f"DRS_Board{b}_Group{g}_Channel8{SUFFIX}"
     br_trg     = f"DRS_Board0_Group3_Channel7{SUFFIX}"
     br_trg_ref = f"DRS_Board0_Group3_Channel8{SUFFIX}"
 
-    keys = set(tree.keys())
+    keys = get_tree_keys(tree)
     if any(br not in keys for br in [br_sig, br_sig_ref, br_trg, br_trg_ref]):
+        TIMING_CACHE[code_key] = None
         return None
 
-    sig     = tree[br_sig    ].array(library="np")
+    print(f"      [READ timing] {code_key}", flush=True)
+
+    sig     = tree[br_sig].array(library="np")
     sig_ref = tree[br_sig_ref].array(library="np")
-    trg     = tree[br_trg    ].array(library="np")
-    trg_ref = tree[br_trg_ref].array(library="np")
-    return (sig - sig_ref) - (trg - trg_ref)
+
+    if "TRIGGER_CORR" not in TIMING_CACHE:
+        trg     = tree[br_trg].array(library="np")
+        trg_ref = tree[br_trg_ref].array(library="np")
+        TIMING_CACHE["TRIGGER_CORR"] = trg - trg_ref
+
+    out = (sig - sig_ref) - TIMING_CACHE["TRIGGER_CORR"]
+    TIMING_CACHE[code_key] = out
+    return out
 
 def parse_code(code_str):
     return int(code_str[0]), int(code_str[1]), int(code_str[2])
@@ -194,15 +242,27 @@ def parse_code(code_str):
 # Minimal amplitude guard (loose – just removes dead events)
 # ============================================================
 def amp_ok(tree, code_str, threshold=AMP_THRESHOLD):
+    if code_str in AMP_CACHE:
+        return AMP_CACHE[code_str]
+
     b, g, c = parse_code(code_str)
     br = f"DRS_Board{b}_Group{g}_Channel{c}"
-    if br not in set(tree.keys()):
-        return np.ones(tree.num_entries, dtype=bool)
+
+    keys = get_tree_keys(tree)
+    if br not in keys:
+        out = np.ones(tree.num_entries, dtype=bool)
+        AMP_CACHE[code_str] = out
+        return out
+
+    print(f"      [READ waveform] {code_str}", flush=True)
+
     wf = tree[br].array(library="ak")
     bl = ak.mean(wf[:, :30], axis=1)
     peak = ak.max(wf - bl, axis=1)
-    return ak.to_numpy(peak) >= threshold
+    out = ak.to_numpy(peak) >= threshold
 
+    AMP_CACHE[code_str] = out
+    return out
 # ============================================================
 # Gaussian (peak-normalised)
 # ============================================================
@@ -251,12 +311,12 @@ def decorate_axes(ax, xlabel, ylabel, particle_type):
     ptag = r"$e^{+}$" if (particle_type or "").lower() == "electron" else \
            (particle_type or "All").capitalize()
     hep.cms.label(ax=ax, exp="CaloX", data=False,
-                  llabel=r"$\it{L\!-\!R\ \Delta t}$",
+                  llabel=r"$\it{Family\ combinations\ \Delta t}$",
                   rlabel=f"40 GeV {ptag}",
                   fontsize=CMS_FS)
 
 # ============================================================
-# Core: compute delta-t for one pair and make the plot
+# Core: compute delta-t for one channel combination and make the plot
 # ============================================================
 def process_pair(tree, pid_mask, ch_left, ch_right, family, run_label):
     """
@@ -299,7 +359,7 @@ def process_pair(tree, pid_mask, ch_left, ch_right, family, run_label):
     t_l = t_l[win]
     t_r = t_r[win]
 
-    dt = t_r - t_l          # Δt = t_right − t_left
+    dt = t_r - t_l          # Δt = t_second − t_first
     n  = len(dt)
 
     if n < 25:
@@ -350,63 +410,95 @@ def process_pair(tree, pid_mask, ch_left, ch_right, family, run_label):
           f"FWHM={fwhm:.3f} ns")
 
     return dict(
-        ch_left=ch_left, ch_right=ch_right,
-        family=family, run_label=run_label,
-        n=n, mu=mu, sigma=sigma, fwhm=fwhm, time_err=time_err,
-        xmin=xmin, xmax=xmax,
-        centers=centers, hist_norm=h_norm,
-        x_smooth=x_smooth, y_gauss=y_gauss,
+        ch_left=ch_left,
+        ch_right=ch_right,
+        family=family,
+        run_label=run_label,
+        n=n,
+        mu=mu,
+        sigma=sigma,
+        fwhm=fwhm,
+        time_err=time_err,
+        xmin=xmin,
+        xmax=xmax,
+        centers=centers,
+        hist_norm=h_norm,
+        x_smooth=x_smooth,
+        y_gauss=y_gauss,
+        dt_raw=dt.astype(np.float32),
+        dt_windowed=dt_win.astype(np.float32),
     )
-
-
 def make_pair_plot(ax, res, particle_type):
-    """Draw histogram + Gaussian fit on ax for one pair result dict."""
-    color = FAMILY_COLORS[res["family"]]
-    fam_label = FAMILY_DISPLAY[res["family"]]
+    """Draw histogram + Gaussian fit."""
+    display_name = particle_type.capitalize() if particle_type else "All Particles"
+    family_label = FAMILY_DISPLAY[res["family"]]
 
-    # Filled step histogram
+    # Histogram only
     bw = res["centers"][1] - res["centers"][0]
     xl = res["centers"] - 0.5 * bw
     xr = res["centers"] + 0.5 * bw
     xs = np.empty(2 * len(res["centers"]))
     ys = np.empty(2 * len(res["centers"]))
-    xs[0::2] = xl;  xs[1::2] = xr
-    ys[0::2] = res["hist_norm"]; ys[1::2] = res["hist_norm"]
-    ax.fill_between(xs, 0, ys, alpha=0.18, color=color, linewidth=0)
-    ax.step(res["centers"], res["hist_norm"],
-            where="mid", lw=1.6, alpha=0.65, color=color)
+    xs[0::2] = xl
+    xs[1::2] = xr
+    ys[0::2] = res["hist_norm"]
+    ys[1::2] = res["hist_norm"]
 
-    # Gaussian curve
-    ax.plot(res["x_smooth"], res["y_gauss"],
-            lw=3.8, color=color, solid_capstyle="round",
-            label=(rf"Gaussian fit: $\mu$ = {res['mu']:+.3f} ns, "
-                   rf"$\sigma$ = {res['sigma']:.3f} ns"
-                   f"\nFWHM = {res['fwhm']:.3f} ns, N = {res['n']}"))
+    ax.fill_between(xs, 0, ys, alpha=0.18, color="black", linewidth=0)
+    ax.step(res["centers"], res["hist_norm"],
+            where="mid", lw=2.2, color="black", label="Data")
+
+    # Gaussian fit
+    ax.plot(
+        res["x_smooth"],
+        res["y_gauss"],
+        color="red",
+        lw=2.8,
+        label=(f"Gaussian Fit\n"
+               f"μ = {res['mu']:+.3f} ns\n"
+               f"σ = {res['sigma']*1000:.1f} ps")
+    )
+
+    ax.set_xlabel(
+        rf"$t_{{\mathrm{{{res['ch_right']}}}}} - t_{{\mathrm{{{res['ch_left']}}}}}$ [ns]",
+        fontsize=22
+    )
+    ax.set_ylabel("[A.U.]", fontsize=22)
 
     ax.set_xlim(res["xmin"], res["xmax"])
-    ax.set_ylim(0, 1.45)
+    ax.set_ylim(0, 1.2)
 
-    decorate_axes(ax,
-                  rf"$\Delta t$ = $t_{{\mathrm{{{res['ch_right']}}}}}$ − $t_{{\mathrm{{{res['ch_left']}}}}}$ [ns]",
-                  "Normalized Events",
-                  particle_type)
+    # No "Preliminary"
+    hep.cms.label(
+        ax=ax,
+        exp="CaloX",
+        data=False,
+        llabel="",
+        rlabel="2025 Test Beam"
+    )
 
-    # Pair / family label box
-    ax.text(0.98, 0.965,
-            f"{fam_label}\nPair: {res['ch_left']} (L) — {res['ch_right']} (R)",
-            transform=ax.transAxes, ha="right", va="top", fontsize=22,
-            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
-                      edgecolor="none", alpha=0.85),
-            zorder=10)
+    # Text block: no pair line, no "Family:" prefix
+    ax.text(
+        0.05, 0.90,
+        f"Particle: {display_name}\n{family_label}",
+        transform=ax.transAxes,
+        fontsize=16,
+        verticalalignment="top"
+    )
 
-    leg = ax.legend(loc="upper left",
-                    bbox_to_anchor=(0.02, 0.88),
-                    frameon=True, fancybox=True, framealpha=0.88,
-                    facecolor="white", edgecolor="none",
-                    fontsize=20, handlelength=2.2)
-    for t in leg.get_texts():
-        t.set_fontweight("normal")
+    ax.legend(
+        loc="upper right",
+        frameon=True,
+        fontsize=20,
+        handlelength=1.8,
+        borderpad=0.5,
+        labelspacing=0.35
+    )
+    ax.grid(True, linestyle="--", alpha=0.3)
 
+    ax.tick_params(which="major", direction="in", top=True, right=True, length=8)
+    ax.tick_params(which="minor", direction="in", top=True, right=True, length=4)
+    ax.minorticks_on()
 
 # ============================================================
 # Summary page: all σ values per family
@@ -433,7 +525,7 @@ def make_summary_page(pdf, all_results, particle_type):
         ax.set_xticks(x)
         ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=14)
         ax.set_ylabel(r"$\sigma_{\Delta t}$ [ps]", fontsize=AXIS_FS)
-        ax.set_title(f"{FAMILY_DISPLAY[family]}: σ of Δt per left-right pair",
+        ax.set_title(f"{FAMILY_DISPLAY[family]}: σ of Δt for all 6 combinations",
                      fontsize=28, loc="left")
         ax.tick_params(which="major", labelsize=TICK_FS,
                        length=10, width=1.8, direction="in", top=True, right=True)
@@ -449,7 +541,7 @@ def make_summary_page(pdf, all_results, particle_type):
         ptag = r"$e^{+}$" if (particle_type or "").lower() == "electron" else \
                (particle_type or "All").capitalize()
         hep.cms.label(ax=ax, exp="CaloX", data=False,
-                      llabel=r"$\it{L\!-\!R\ \Delta t}$",
+                      llabel=r"$\it{Family\ combinations\ \Delta t}$",
                       rlabel=f"40 GeV {ptag}", fontsize=CMS_FS)
 
         fig.subplots_adjust(left=0.08, right=0.98, top=0.88, bottom=0.28)
@@ -467,10 +559,10 @@ def run_label_from_path(path):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Δt left-right channel pairs for run1501.")
+        description="Δt timing-resolution plots for all six family combinations.")
     ap.add_argument("--ana-file", required=True,
                     help="Single ROOT file (run1501)")
-    ap.add_argument("--outdir",   default="./DeltaT_LR_Pairs")
+    ap.add_argument("--outdir",   default="/lustre/research/hep/akshriva/Dream-Timing/DeltaT_LR_Pairs/TIMING_PAIRS")
     ap.add_argument("--pid",      default="electron",
                     choices=["muon", "pion", "electron", "proton"])
     ap.add_argument("--families", nargs="+",
@@ -487,7 +579,8 @@ def main():
         raise SystemExit(f"[FATAL] File not found: {fpath}")
 
     run_label = run_label_from_path(fpath)
-    print(f"\n[INIT] Delta-T left-right pairs")
+    #print(f"\n[INIT] Delta-T all six family combinations")
+    print(f"\n[INIT] Delta-T all six combinations for every complete grid row")
     print(f"[INIT] File      : {os.path.basename(fpath)}")
     print(f"[INIT] Run label : {run_label}")
     print(f"[INIT] PID       : {args.pid}")
@@ -506,35 +599,37 @@ def main():
 
     all_results = []
 
-    pdf_path = os.path.join(args.outdir,
-                            f"DeltaT_LR_Pairs_{args.pid}_{run_label}.pdf")
-    print(f"\n[PLOT] Writing to {pdf_path}\n")
+    print(f"\n[PLOT] Writing individual PDFs to {args.outdir}\n")
 
-    with PdfPages(pdf_path) as pdf:
-        for family in args.families:
-            pairs  = ALL_PAIRS[family]
-            color  = FAMILY_COLORS[family]
-            n_pairs = len(pairs)
-            print(f"\n[FAMILY] {family}  ({n_pairs} pairs)")
+    all_results = []
 
-            for ch_left, ch_right in pairs:
-                res = process_pair(tree, pid_mask,
-                                   ch_left, ch_right, family, run_label)
-                if res is None:
-                    continue
+    for family in args.families:
+        pairs = ALL_PAIRS[family]
+        print(f"\n[FAMILY] {family}  ({len(pairs)} pairs)")
 
-                all_results.append(res)
+        for ch_left, ch_right in pairs:
+            print(f"    [START] {family} {ch_left}-{ch_right}", flush=True)
 
-                # individual page per pair
-                fig, ax = plt.subplots(figsize=(14, 10))
-                make_pair_plot(ax, res, args.pid)
-                fig.subplots_adjust(left=0.10, right=0.98, top=0.92, bottom=0.14)
-                pdf.savefig(fig, dpi=220)
-                plt.close(fig)
+            res = process_pair(tree, pid_mask, ch_left, ch_right, family, run_label)
+            if res is None:
+                continue
 
-        # Summary σ-per-pair plots
-        if all_results:
-            make_summary_page(pdf, all_results, args.pid)
+            all_results.append(res)
+
+            fig, ax = plt.subplots(figsize=(10, 8))
+            make_pair_plot(ax, res, args.pid)
+            fig.subplots_adjust(left=0.12, right=0.97, top=0.92, bottom=0.13)
+
+            # filename only uses channel names
+            pdf_name = f"{ch_left}_{ch_right}.pdf"
+            pdf_file = os.path.join(args.outdir, pdf_name)
+            fig.savefig(pdf_file)
+            plt.close(fig)
+
+            print(f"    [SAVE] {pdf_file}")
+            # Summary σ-per-pair plots
+        #if all_results:
+            #make_summary_page(pdf, all_results, args.pid)
 
     try:
         uf.close()
@@ -543,8 +638,8 @@ def main():
 
     # ── Text summary ──────────────────────────────────────────────────────────
     txt_path = os.path.join(args.outdir,
-                            f"DeltaT_LR_summary_{args.pid}_{run_label}.txt")
-    hdr = (f"{'Family':<8} | {'Left':<6} | {'Right':<6} | "
+                            f"DeltaT_Family6Combos_summary_{args.pid}_{run_label}.txt")
+    hdr = (f"{'Family':<8} | {'First':<6} | {'Second':<6} | "
            f"{'N':>6} | {'mu [ns]':>10} | {'sigma [ns]':>10} | "
            f"{'sigma [ps]':>10} | {'FWHM [ns]':>10} | {'time_err [ps]':>14}")
     sep = "=" * len(hdr)
@@ -560,9 +655,9 @@ def main():
                 f"{r['time_err']*1e3:>14.2f}\n"
             )
 
-    print(f"\n[DONE] PDF    : {pdf_path}")
+    print(f"\n[DONE] Individual PDFs saved in: {args.outdir}")
     print(f"[DONE] Table  : {txt_path}")
-    print(f"[DONE] Total pairs fitted: {len(all_results)}")
+    print(f"[DONE] Total combinations fitted: {len(all_results)}")
 
 
 if __name__ == "__main__":
