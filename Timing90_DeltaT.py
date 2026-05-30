@@ -444,9 +444,18 @@ def make_pair_plot(ax, res, particle_type):
     ys[0::2] = res["hist_norm"]
     ys[1::2] = res["hist_norm"]
 
-    ax.fill_between(xs, 0, ys, alpha=0.18, color="black", linewidth=0)
-    ax.step(res["centers"], res["hist_norm"],
-            where="mid", lw=2.2, color="black", label="Data")
+    hist_color = "#6A85C3"
+
+    ax.fill_between(xs, 0, ys, alpha=0.35, color=hist_color, linewidth=0)
+
+    ax.step(
+        res["centers"],
+        res["hist_norm"],
+        where="mid",
+        lw=2.2,
+        color=hist_color,
+        label="Data"
+    )
 
     # Gaussian fit
     ax.plot(
