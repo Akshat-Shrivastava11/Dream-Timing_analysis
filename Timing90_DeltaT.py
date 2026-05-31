@@ -28,10 +28,12 @@ import uproot
 import awkward as ak
 from scipy.optimize import curve_fit
 
+import matplotlib
+matplotlib.use("Agg")   # must be before importing pyplot
+
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import mplhep as hep
-
 plt.style.use(hep.style.CMS)
 
 # ============================================================
@@ -273,9 +275,9 @@ def gaussian(x, mean, sigma):
 # Paper style helpers
 # ============================================================
 AXIS_FS  = 32
-TICK_FS  = 26
+TICK_FS  = 30
 CMS_FS   = 28
-LEGEND_FS= 20
+LEGEND_FS= 22
 
 def apply_style():
     plt.rcParams.update({
@@ -470,9 +472,9 @@ def make_pair_plot(ax, res, particle_type):
 
     ax.set_xlabel(
         rf"$t_{{\mathrm{{{res['ch_right']}}}}} - t_{{\mathrm{{{res['ch_left']}}}}}$ [ns]",
-        fontsize=22
+        fontsize=24
     )
-    ax.set_ylabel("[A.U.]", fontsize=22)
+    ax.set_ylabel("A.U.", fontsize=30)
 
     ax.set_xlim(res["xmin"], res["xmax"])
     ax.set_ylim(0, 1.2)
@@ -488,17 +490,17 @@ def make_pair_plot(ax, res, particle_type):
 
     # Text block: no pair line, no "Family:" prefix
     ax.text(
-        0.05, 0.90,
+        0.05, 0.95,
         f"Particle: {display_name}\n{family_label}",
         transform=ax.transAxes,
-        fontsize=16,
+        fontsize=24,
         verticalalignment="top"
     )
 
     ax.legend(
         loc="upper right",
         frameon=True,
-        fontsize=20,
+        fontsize=24,
         handlelength=1.8,
         borderpad=0.5,
         labelspacing=0.35
@@ -532,10 +534,10 @@ def make_summary_page(pdf, all_results, particle_type):
                    label=rf"Mean $\sigma$ = {np.nanmean(sigmas):.0f} ps")
 
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=14)
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=20)
         ax.set_ylabel(r"$\sigma_{\Delta t}$ [ps]", fontsize=AXIS_FS)
         ax.set_title(f"{FAMILY_DISPLAY[family]}: σ of Δt for all 6 combinations",
-                     fontsize=28, loc="left")
+                     fontsize=30, loc="left")
         ax.tick_params(which="major", labelsize=TICK_FS,
                        length=10, width=1.8, direction="in", top=True, right=True)
         ax.tick_params(which="minor", length=6, width=1.4,
